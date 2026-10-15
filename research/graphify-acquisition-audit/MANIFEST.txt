@@ -1,0 +1,55 @@
+IWTT — GRAPHIFY ACQUISITION AUDIT — MANIFEST
+============================================================
+
+Subject of audit : https://github.com/Graphify-Labs/graphify.git
+Branch inspected : v8
+Commit SHA       : 10130e79ed9caf8f60d998073e097531eaa1a395 (chore(release): 0.9.91, 2026-10-14)
+Declared license : Apache-2.0 (LICENSE) + retained LICENSE-MIT + NOTICE
+
+Mission posture  : research/audit only. Graphify UNMODIFIED; IWTT UNMODIFIED.
+                   No fork, commit, branch, PR, or issue created.
+                   Graphify working tree verified clean (git status --porcelain: 0 lines)
+                   at completion, HEAD unchanged.
+
+Generated        : 2026-10-15T22:22:50.381987+00:00
+Environment      : Linux-6.1.158+-x86_64-with-glibc2.41
+Measurement host : 2 vCPU Intel Xeon @ 2.60 GHz, ~1.9 GB RAM visible, Python 3.13.16,
+                   networkx 3.7, numpy 2.3.5, rapidfuzz 3.14.6, graspologic-native 1.3.1
+
+DOCUMENTS
+------------------------------------------------------------
+8e7430b96142779e831c299e6f93123b73c52443d3290ca8999c1d438825571e    14010  AGENT_INTEGRATION.md
+2a8348940e81ac054f8feb9cd2c5d033ab329146d0b5ee7b575c616396c5d473    11449  CLUSTERING.md
+bc5b9d620a35b95ca6653da3828d57de067f8ac140911148c9db5e9551d6890b    19868  GRAPHIFY_ARCHITECTURE.md
+223479b82d177375f89b89f3b07695851d5507450cee0bef38ddf7a4ae6dbd0d    10948  GRAPH_MODEL.md
+8aed6deb9275f60c308d579130454b2851a4b11a7262e9b1d7ed0f0789f0540d    33906  IWTT_ACQUISITION_MATRIX.md
+688fd1f7577d2f6a536203d8b7a6ad8561fe0e32756caad36bb0ae7979bd751d    22949  IWTT_GRAPHIFY_FUTURE_ARCHITECTURE.md
+83c8f51c74f04d1efa0d37d00c1b5cef5b9f08126de283369d068f760789705c    20951  IWTT_RECALL_PIPELINE.md
+5289fda514b74aab2190682f4537b07cf78b24d6fb41e2f95ebb939e727e270d    13374  LICENSE_AUDIT.md
+36187176d9d816ca524bf315bc6198bf1f91d3163350252d755342da1d0a9707    11048  LOCAL_FIRST_PRIVACY.md
+e7dd186c79e5d849aeb9ae1b142a880706ad8fccb3e225d9d8ff7370df9b0ef2    11678  PROVENANCE.md
+721101a62fd29f24c7df5deaa3b900dc3033ee8914d3c476f12e8ca7b0b05de6     7705  README.md
+9b41d7952bcc27c7a1623038db4ff1346f5d916e7cc7318fd97771eed9f52fa0    12980  REJECTED_COMPONENTS.md
+fb3843e86a60ed742113ef5c74f63e97535453cd1e8901e865630f8c8ace2509    11582  SCALING.md
+4c8374f0d2dfa41f6f9e9ef882271645a4d506322599947c731ca56ca77b6c2d    14938  SEARCH_AND_QUERY.md
+6c385f247c7f8c08d263965b27b9fcaa83591a9aa74010a6afe66a8199736931    36426  SOURCE_EVIDENCE.md
+
+SUPPORTING RESEARCH INSTRUMENTATION (research-only; outside the Graphify clone)
+------------------------------------------------------------
+6acfd3ec68fe7e9c0cbdddd507e6f05d06d1013ad146fa2565d5a0a4ffac9977     2453  research_instrumentation/gen_corpus.py
+4e858285ced27d2043e061a5fa0bae67b952f4ac78ee3b2e043c94dbf948b2b8     7526  research_instrumentation/measure_graphify.py
+13ef9132c674362b555f77ddec33c64321856256391354c002be198220430c04     1925  research_instrumentation/measure_load_1m.py
+76525db42fe765bacb179066e4c661ade4e8aaf56d4ffc5067842aa97e783a61     2551  research_instrumentation/timings.jsonl
+
+MEASURED SIZES (see SCALING.md)
+------------------------------------------------------------
+Full pipeline measured at 1,000 / 10,000 / 100,000 / 250,000 nodes.
+File-load path additionally measured at 500,000 and 1,000,000 nodes
+(both exceeded available memory during JSON parsing; recorded as MEASURED failures).
+All other scaling statements are labelled ESTIMATED with the basis stated.
+
+BENCHMARK NOTE
+------------------------------------------------------------
+BENCHMARKS.md numbers are recorded as VENDOR CLAIMS, NOT REPRODUCED: the harness
+(memory/, crosstool/, graphify_eval/) is absent from the public repository.
+

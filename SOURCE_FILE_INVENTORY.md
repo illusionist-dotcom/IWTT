@@ -1,0 +1,24 @@
+# Source file inventory
+
+- `.gitignore` — excludes runtime databases, caches, and secrets from source snapshots.
+- `VERSION` — application/export schema versions.
+- `README.md` — local setup, feature guide, limits, and test commands.
+- `Makefile` — `run`, `test`, and `verify` shortcuts.
+- `requirements.txt` — documents the zero-third-party-dependency runtime.
+- `ARCHITECTURE.md` — modules, SQLite storage, canonical/derived boundary.
+- `DATA_MODEL.md` — canonical and derived schema.
+- `EVENT_MODEL.md` — provenance and event/history contract.
+- `IMPORT_EXPORT.md` — JSON, Markdown, import validation, and backup instructions.
+- `AI_BOUNDARIES.md` — opt-in provider, provenance, and no-AI behavior.
+- `FUTURE_MIND_WORLD.md` — presentation-independent future compatibility.
+- `PRIVACY.md` — data location, local networking, AI, and security limitations.
+- `TESTING.md` — automated and manual verification procedures.
+- `iwtt/__init__.py` — package version.
+- `iwtt/store.py` — SQLite schema/constraints, canonical operations, local search, events, import/export, backup, demo fixture.
+- `iwtt/server.py` — standard-library local HTTP API and static asset server.
+- `iwtt/ai.py` — `NoAIProvider` and explicit OpenAI-compatible adapter.
+- `web/index.html` — app shell and navigation.
+- `web/style.css` — responsive local styling with no remote assets.
+- `web/app.js` — capture, browsing, search, detail/history, Graveyard, graph, and data workflows.
+- `tests/test_store.py` — 15 isolated SQLite safety/behavior tests.
+- `scripts/verify_release.py` — end-to-end release workflow in a temporary vault.
