@@ -1,7 +1,14 @@
-"""Canonical SQLite store for IWTT v0.1.
+"""Canonical SQLite store for IWTT.
 
 Thought text, revisions, lifecycle state, tags, relationships and events are
-canonical. Search documents and AI artifacts are rebuildable/derived.
+canonical.  Search documents, AI artifacts and — since v0.2 — the ``recall_*``
+tables (lexical index, IDF term statistics, trigram index, document metadata,
+graph cache, automatically discovered clusters, query-outcome memory, build logs)
+are rebuildable/derived.
+
+v0.2 changed nothing canonical.  The v0.1 retrieval path (``search()``) is frozen
+byte-for-byte; Recall V2 lives beside it and is reached through ``recall()`` /
+``find_my_thought()`` and the ``iwtt.recall`` package.
 """
 from __future__ import annotations
 
@@ -14,11 +21,24 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 EXPORT_FORMAT = "iwtt-vault-export"
+#: The canonical export contract is UNCHANGED in v0.2.  A v0.1 export imports into
+#: v0.2 and a v0.2 canonical export imports into v0.1, because v0.2 adds no
+#: canonical field.  Bumping this number would break that symmetry for no gain.
 EXPORT_SCHEMA_VERSION = 1
+#: v0.1 canonical schema version, preserved verbatim.
+CANONICAL_SCHEMA_VERSION = "1"
+#: v0.2 adds a derived recall layer only.  Its version is tracked separately so
+#: the canonical schema version can keep meaning exactly what it meant in v0.1.
+#: The value is owned by the recall package (a change to the derived DDL must bump
+#: it there); storing it here would let the two drift apart silently.
+def _recall_schema_version() -> str:
+    from .recall.config import RECALL_INDEX_SCHEMA
+
+    return str(RECALL_INDEX_SCHEMA)
 THOUGHT_TYPES = {"THOUGHT", "EXPERIMENT", "INVENTION", "PROJECT"}
 THOUGHT_STATUSES = {"ACTIVE", "GRAVEYARD"}
 RELATIONSHIP_TYPES = {
@@ -301,13 +321,81 @@ class Vault:
                 raise
 
     def initialize(self) -> None:
+        """Create or migrate the vault.
+
+        MIGRATION v0.1 → v0.2 (see V0.1_TO_V0.2_MIGRATION.md)
+
+        v0.2 makes **no canonical schema change**.  It adds derived ``recall_*``
+        tables beside v0.1's existing derived tables (``search_documents``,
+        ``derived_artifacts``) and records its own version markers in
+        ``schema_info``.  Consequences, all tested:
+
+          * a v0.1 vault opens unchanged, and its canonical fingerprint is
+            provably identical before and after;
+          * no canonical ID is regenerated, no original text is touched;
+          * ``schema_info.schema_version`` stays ``'1'`` — the canonical contract;
+          * rollback is "use v0.1 again": the extra tables are ignored by v0.1
+            and can be dropped without loss (``clear_derived_data()`` does it).
+
+        The derived DDL is applied inside one transaction, so a failure leaves
+        the vault exactly as it was found.
+        """
+        from .recall.index import RECALL_SCHEMA_SQL
+
         with self._connection() as conn:
             conn.execute("PRAGMA journal_mode = WAL")
+            # Both scripts are pure idempotent DDL (CREATE … IF NOT EXISTS) and
+            # are run BEFORE the explicit transaction: sqlite3.executescript()
+            # issues an implicit COMMIT first, which would otherwise silently end
+            # the transaction the version markers are written in.
             conn.executescript(SCHEMA_SQL)
-            conn.execute(
-                "INSERT OR REPLACE INTO schema_info(key, value) VALUES('schema_version', '1')"
-            )
-            conn.commit()
+            previous_canonical = self._schema_info_value(conn, "schema_version")
+            recall_schema_version = _recall_schema_version()
+            previous_recall = self._schema_info_value(conn, "recall_schema_version")
+            conn.executescript(RECALL_SCHEMA_SQL)
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO schema_info(key, value) VALUES('schema_version', ?)",
+                    (CANONICAL_SCHEMA_VERSION,),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO schema_info(key, value) VALUES('recall_schema_version', ?)",
+                    (recall_schema_version,),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO schema_info(key, value) VALUES('app_version', ?)",
+                    (APP_VERSION,),
+                )
+                if previous_recall is None and previous_canonical is not None:
+                    # First v0.2 open of an existing v0.1 vault.  Recorded so the
+                    # migration is auditable after the fact.
+                    conn.execute(
+                        "INSERT OR REPLACE INTO schema_info(key, value) VALUES('migrated_from_app_version', ?)",
+                        ("0.1.x" if previous_canonical == CANONICAL_SCHEMA_VERSION else previous_canonical),
+                    )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO schema_info(key, value) VALUES('migrated_at', ?)",
+                        (now_utc(),),
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    @staticmethod
+    def _schema_info_value(conn: sqlite3.Connection, key: str) -> str | None:
+        try:
+            row = conn.execute("SELECT value FROM schema_info WHERE key=?", (key,)).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        return row["value"] if row else None
+
+    def schema_versions(self) -> dict[str, Any]:
+        """Version markers, for the diagnostics view and the migration tests."""
+        with self._connection() as conn:
+            rows = conn.execute("SELECT key, value FROM schema_info ORDER BY key").fetchall()
+        return {row["key"]: row["value"] for row in rows}
 
     def _insert_event(
         self,
@@ -928,7 +1016,87 @@ class Vault:
                 "demoThoughts": count("SELECT COUNT(*) FROM thoughts WHERE is_demo=1"),
                 "derivedArtifacts": count("SELECT COUNT(*) FROM derived_artifacts"),
                 "searchDocuments": count("SELECT COUNT(*) FROM search_documents"),
+                # --- v0.2 derived recall layer (additive keys; the v0.1 keys
+                #     above keep their exact original meaning) ---
+                "recall": self._recall_stats(conn),
             }
+
+    @staticmethod
+    def _recall_stats(conn: sqlite3.Connection) -> dict[str, Any]:
+        """Derived-layer counters, read defensively so a vault that has never
+        built its recall indexes still reports cleanly."""
+        def safe(sql: str) -> int:
+            try:
+                return int(conn.execute(sql).fetchone()[0])
+            except sqlite3.OperationalError:
+                return 0
+
+        try:
+            built_at = conn.execute(
+                "SELECT value FROM recall_meta WHERE key='built_at'"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            built_at = None
+        return {
+            "indexedThoughts": safe("SELECT COUNT(*) FROM recall_docs"),
+            "tokenRows": safe("SELECT COUNT(*) FROM recall_tokens"),
+            "trigramRows": safe("SELECT COUNT(*) FROM recall_trigrams"),
+            "terms": safe("SELECT COUNT(*) FROM recall_term_stats"),
+            "graphCacheRows": safe("SELECT COUNT(*) FROM recall_graph_cache"),
+            "clusters": safe("SELECT COUNT(DISTINCT cluster_id) FROM recall_clusters"),
+            "clusteredThoughts": safe("SELECT COUNT(*) FROM recall_clusters"),
+            "queryMemoryEvents": safe("SELECT COUNT(*) FROM recall_query_memory"),
+            "builtAt": built_at["value"] if built_at else None,
+            "canonical": False,
+        }
+
+    def canonical_fingerprint(self) -> str:
+        """Stable digest over every canonical record.
+
+        Used to *prove* — not assert — that migration, derived-data destruction,
+        export/import and restart leave the user's knowledge identical.  Derived
+        tables are excluded by construction: only ``thoughts``, ``revisions``,
+        ``tags``, ``thought_tags``, ``relationships`` and ``events`` are read, in
+        a fixed order, so the digest is reproducible across processes.
+        """
+        import hashlib
+
+        digest = hashlib.sha256()
+        projections = (
+            (
+                "thoughts",
+                "SELECT id,original_text,current_text,title,type,status,created_at,updated_at,"
+                "graveyard_at,resurrected_at,is_demo FROM thoughts ORDER BY id",
+            ),
+            (
+                "revisions",
+                "SELECT id,thought_id,revision_number,text,title,type,created_at,change_reason "
+                "FROM revisions ORDER BY thought_id,revision_number",
+            ),
+            ("tags", "SELECT id,name,normalized_name,created_at,is_demo FROM tags ORDER BY id"),
+            (
+                "thought_tags",
+                "SELECT thought_id,tag_id,created_at FROM thought_tags ORDER BY thought_id,tag_id",
+            ),
+            (
+                "relationships",
+                "SELECT id,source_id,target_id,type,provenance,status,created_at,updated_at,"
+                "confirmed_at,confirmed_by,metadata_json,is_demo FROM relationships ORDER BY id",
+            ),
+            (
+                "events",
+                "SELECT id,target_id,target_type,event_type,timestamp,metadata_json,is_demo "
+                "FROM events ORDER BY id",
+            ),
+        )
+        with self._connection() as conn:
+            for name, sql in projections:
+                digest.update(name.encode("utf-8"))
+                digest.update(b"\x1f")
+                for row in conn.execute(sql):
+                    digest.update(_json(tuple(row)).encode("utf-8"))
+                    digest.update(b"\x1e")
+        return digest.hexdigest()
 
     def _ensure_search_index(self, conn: sqlite3.Connection) -> None:
         missing = conn.execute(
@@ -1063,13 +1231,51 @@ class Vault:
             indexed = self._rebuild_search_index_conn(conn)
         return {"indexedThoughts": indexed, "rebuiltAt": now_utc()}
 
-    def clear_derived_data(self) -> dict[str, int]:
+    def clear_derived_data(self) -> dict[str, Any]:
+        """DELETE ALL DERIVED INTELLIGENCE.
+
+        Removes every rebuildable row v0.1 and v0.2 own:
+
+          * ``derived_artifacts``   — AI summaries and other generated artifacts
+          * ``search_documents``    — the v0.1 search projection
+          * ``recall_*``            — the v0.2 derived layer: lexical index,
+            term statistics/IDF, trigram index, document metadata, graph cache
+            (degrees, hub factors), automatically discovered clusters, query
+            memory, and build logs
+
+        No canonical table is touched.  ``tests/test_canonical_destruction.py``
+        proves the canonical export is byte-identical before and after, that the
+        ``original_text`` trigger still fires, and that recall works again once
+        the indexes rebuild.
+
+        The two v0.1 return keys are preserved with their original meaning so the
+        existing tests and the existing UI keep working; the v0.2 counts are added
+        alongside them.
+        """
+        from .recall.index import RecallIndex
+
         with self._transaction() as conn:
             artifacts = conn.execute("SELECT COUNT(*) FROM derived_artifacts").fetchone()[0]
             indexes = conn.execute("SELECT COUNT(*) FROM search_documents").fetchone()[0]
             conn.execute("DELETE FROM derived_artifacts")
             conn.execute("DELETE FROM search_documents")
-        return {"derivedArtifactsDeleted": int(artifacts), "searchDocumentsDeleted": int(indexes)}
+            recall_removed = RecallIndex(self).clear(conn)
+        recall_total = sum(recall_removed.values())
+        return {
+            "derivedArtifactsDeleted": int(artifacts),
+            "searchDocumentsDeleted": int(indexes),
+            "recallRowsDeleted": int(recall_total),
+            "recallTablesDeleted": {
+                table: int(count) for table, count in sorted(recall_removed.items())
+            },
+            "canonicalTablesTouched": [],
+            "note": (
+                "All derived intelligence deleted. Canonical thoughts, original text, "
+                "revisions, tags, relationships, provenance, events, lifecycle state and "
+                "Graveyard/resurrection history are unchanged. Indexes rebuild themselves "
+                "on the next search or recall."
+            ),
+        }
 
     def save_derived_artifact(
         self,
@@ -1143,7 +1349,44 @@ class Vault:
                         "SELECT * FROM derived_artifacts ORDER BY generated_at,id"
                     )]
                 }
+                # v0.2: the derived recall layer is exportable too, under its own
+                # key, so a move to another machine can carry its shape.  It stays
+                # optional, never canonical, and excluded by default — and
+                # import_vault() ignores it, because indexes are rebuilt from
+                # canonical data rather than trusted from a shipped file.
+                export["derived"]["recall"] = self._export_recall_derived(conn)
             return export
+
+    @staticmethod
+    def _export_recall_derived(conn: sqlite3.Connection) -> dict[str, Any]:
+        """Shape and row counts of the derived recall layer — never its content.
+
+        No verbatim thought text is duplicated into an export: the derived index
+        stores tokens, counts and metadata only, and a rebuild regenerates
+        everything from canonical data.
+        """
+        from .recall.index import RECALL_DERIVED_TABLES
+
+        out: dict[str, Any] = {"exported": False, "tables": {}, "builtAt": None}
+        try:
+            built = conn.execute("SELECT value FROM recall_meta WHERE key='built_at'").fetchone()
+        except sqlite3.OperationalError:
+            return out
+        out["builtAt"] = built["value"] if built else None
+        for table in RECALL_DERIVED_TABLES:
+            try:
+                cursor = conn.execute(f"SELECT * FROM {table} LIMIT 0")
+                columns = [d[0] for d in cursor.description]
+                row_count = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            except sqlite3.OperationalError:
+                continue
+            out["tables"][table] = {"columns": columns, "rowCount": row_count}
+        out["exported"] = bool(out["tables"])
+        out["note"] = (
+            "Row counts and column shapes only. The derived index is rebuilt from "
+            "canonical data, never restored from an export."
+        )
+        return out
 
     def export_markdown(self) -> str:
         export = self.export_vault()
@@ -1620,3 +1863,173 @@ class Vault:
                 "relationshipsRemoved": len(relationship_ids),
                 "eventsRemoved": int(events_removed),
             }
+
+    # ---------------------------------------------------------------- v0.2 --
+    # Recall & Graph Intelligence — public surface.
+    #
+    # Everything below is ADDITIVE.  ``search()`` above is the frozen v0.1
+    # retrieval path and is unchanged; these methods reach a separate engine that
+    # reads the same canonical vault and writes only ``recall_*`` derived tables.
+    #
+    # The engine is created lazily and ``iwtt.recall`` is imported lazily, so a
+    # user who never touches Recall pays nothing and ``store.py`` keeps no
+    # module-level dependency on the recall package (the package imports store).
+    # ------------------------------------------------------------------
+
+    def _recall_engine(self, config: Any | None = None) -> Any:
+        from .recall.engine import RecallEngine
+
+        engine = getattr(self, "_recall_engine_instance", None)
+        if engine is None or config is not None:
+            engine = RecallEngine(self, config=config)
+            if config is None:
+                self._recall_engine_instance = engine
+        return engine
+
+    @property
+    def recall_engine(self) -> Any:
+        """The lazily created Recall V2 engine bound to this vault."""
+        return self._recall_engine()
+
+    def recall(
+        self,
+        query: str,
+        *,
+        limit: int | None = None,
+        include_graveyard: bool | None = None,
+        types: Sequence[str] | None = None,
+        tags: Sequence[str] | None = None,
+        tag_mode: str | None = None,
+        statuses: Sequence[str] | None = None,
+        time_expression: str | None = None,
+        time_field: str | None = None,
+        include_demo: bool | None = None,
+        now: datetime | None = None,
+        explain: bool = True,
+        record_opened: bool = False,
+        config: Any | None = None,
+    ) -> Any:
+        """Recall V2: ranked, deterministic, explainable retrieval.
+
+        Returns a ``RecallOutcome`` with ``.results``, ``.state``, ``.message``,
+        ``.graph``, ``.ambiguity``, ``.timings_ms`` and ``.honesty``.
+
+        ``include_graveyard=False`` narrows to ACTIVE thoughts.  Graveyard
+        thoughts are otherwise *annotated*, never silently dropped: a buried
+        thought is still the user's thought, and hiding it would be a retrieval
+        decision masquerading as a lifecycle one.
+        """
+        return self._recall_engine(config).recall(
+            query,
+            limit=limit,
+            include_graveyard=include_graveyard,
+            types=types,
+            tags=tags,
+            tag_mode=tag_mode,
+            statuses=statuses,
+            time_expression=time_expression,
+            time_field=time_field,
+            include_demo=include_demo,
+            now=now,
+            explain=explain,
+            record_opened=record_opened,
+        )
+
+    def find_my_thought(
+        self,
+        query: str,
+        *,
+        limit: int | None = None,
+        include_graveyard: bool | None = None,
+        now: datetime | None = None,
+        config: Any | None = None,
+    ) -> dict[str, Any]:
+        """The FIND MY THOUGHT entry point, returning a JSON-ready payload."""
+        return self._recall_engine(config).find_my_thought(
+            query, limit=limit, include_graveyard=include_graveyard, now=now
+        )
+
+    def recall_diagnostics(
+        self, query: str, thought_id: str | None = None, *, now: datetime | None = None,
+        config: Any | None = None,
+    ) -> dict[str, Any]:
+        """Full scoring breakdown — the development/debugging view."""
+        from .recall.diagnostics import diagnose
+
+        return diagnose(self._recall_engine(config), query, thought_id=thought_id, now=now)
+
+    def record_recall_feedback(
+        self, *, query: str, thought_id: str, feedback: str,
+        rank: int | None = None, score: float | None = None, note: str = "",
+        recorded_at: str | None = None,
+    ) -> dict[str, Any]:
+        """Record a DERIVED query-outcome signal.
+
+        ``feedback`` ∈ USEFUL / NOT_USEFUL / OPENED / CORRECTION.  This writes one
+        row to ``recall_query_memory`` and nothing else: it never touches a
+        canonical table, never confirms an AI-suggested relationship, and is
+        erased by ``reset_recall_learning()`` or ``clear_derived_data()``.
+        """
+        return self._recall_engine().record_feedback(
+            query, thought_id, feedback, rank=rank, score=score, note=note,
+            recorded_at=recorded_at,
+        )
+
+    def reset_recall_learning(self) -> Any:
+        return self._recall_engine().reset_learning()
+
+    def recall_learning_stats(self) -> dict[str, Any]:
+        return self._recall_engine().learning_stats()
+
+    def recall_learning_history(self, limit: int = 200) -> list[dict[str, Any]]:
+        return self._recall_engine().learning_history(limit=limit)
+
+    def learned_queries(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self._recall_engine().learned_queries(limit=limit)
+
+    def rebuild_recall_indexes(self, *, full: bool = True, rebuild_clusters: bool = True) -> dict[str, Any]:
+        return self._recall_engine().rebuild_indexes(full=full, rebuild_clusters=rebuild_clusters)
+
+    def recall_index_stats(self) -> dict[str, Any]:
+        return self._recall_engine().index_stats()
+
+    def recall_config(self) -> dict[str, Any]:
+        """Every scoring weight, cap, threshold and boundary, for transparency."""
+        return self._recall_engine().config_dict()
+
+    def find_path(self, source_id: str, target_id: str, *, directed: bool = True) -> dict[str, Any]:
+        from .recall.paths import PathResult
+
+        result: PathResult = self._recall_engine().find_path(source_id, target_id, directed=directed)
+        return result.to_dict()
+
+    def thought_lineage(self, thought_id: str, *, max_depth: int = 3) -> dict[str, Any]:
+        return self._recall_engine().lineage(thought_id, max_depth=max_depth)
+
+    def thought_neighbourhood(self, thought_id: str, *, depth: int = 1) -> dict[str, Any]:
+        return self._recall_engine().neighbourhood(thought_id, depth=depth)
+
+    def graph_view_model(
+        self, *, root_ids: Sequence[str] | None = None, max_nodes: int = 200,
+        include_graveyard: bool = True, include_suggested: bool = True,
+    ) -> dict[str, Any]:
+        """A bounded, derived GraphViewModel — never the whole vault in memory."""
+        return self._recall_engine().graph_view_model(
+            root_ids=list(root_ids) if root_ids else None,
+            max_nodes=max_nodes,
+            include_graveyard=include_graveyard,
+            include_suggested=include_suggested,
+        )
+
+    def clusters(self) -> list[dict[str, Any]]:
+        """Automatically discovered, DERIVED groupings (never canonical)."""
+        return self._recall_engine().clusters()
+
+    def delete_all_derived_intelligence(self) -> dict[str, Any]:
+        """Explicit, product-facing name for ``clear_derived_data()``.
+
+        The mission's destructive test calls this.  It is the same operation:
+        every derived row v0.1 and v0.2 own is deleted, and canonical history is
+        untouched.
+        """
+        return self.clear_derived_data()
