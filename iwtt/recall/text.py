@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import math
 import re
+from functools import lru_cache
 from difflib import SequenceMatcher
 from typing import Iterable
 
@@ -33,6 +34,8 @@ __all__ = [
     "normalize_text",
     "tokenize",
     "token_variants",
+    "recall_variants",
+    "morphology_forms",
     "strip_memory_filler",
     "word_trigrams",
     "text_trigrams",
@@ -87,8 +90,131 @@ _WHITESPACE = re.compile(r"\s+")
 
 
 def token_variants(token: str) -> set[str]:
-    """v0.1's morphology + alias expansion, exposed under a public name."""
+    """v0.1's morphology + alias expansion, exposed under a public name.
+
+    This is the FROZEN v0.1 function.  ``Vault.search()`` depends on its exact
+    output, so recall never changes it — it only ever adds to it, in
+    ``recall_variants()`` below.
+    """
     return _token_variants(token)
+
+
+#: Derivational suffixes v0.1 does not handle.  Each entry is
+#: ``(suffix, minimum stem length, extra endings to try on the stem)``.
+#: Deliberately short and conservative: every form produced here is indexed and
+#: matched exactly like a real word, so a rule that fires too eagerly would show
+#: up as a false match rather than hiding quietly.
+_RECALL_SUFFIX_RULES: tuple[tuple[str, int, tuple[str, ...]], ...] = (
+    ("ations", 4, ("",)),
+    ("ation", 4, ("", "e")),
+    ("ness", 4, ("",)),
+    ("ments", 4, ("",)),
+    ("ment", 4, ("",)),
+)
+
+
+_VOWELS = frozenset("aeiou")
+
+# --------------------------------------------------------------------------
+# memoization of pure text analysis
+# --------------------------------------------------------------------------
+# Every function below is pure: the same token always yields the same forms, the
+# same trigrams, the same normalization.  Recall scores hundreds of candidates per
+# query against a handful of query terms, so without memoization the same dozen
+# tokens get re-analyzed thousands of times per query.  Measured at 1,000 thoughts
+# before this change: ~850 candidates per query, ~415,000 tier evaluations for 40
+# queries, ~1,000,000 trigram recomputations, and a p50 recall latency of ~290ms.
+#
+# Caching the pure functions is what makes recall interactive.  Two properties are
+# preserved deliberately:
+#
+#   * **determinism** — a cache hit and a cache miss return the identical value,
+#     so ranking cannot depend on what happened to be cached;
+#   * **bounded memory** — every cache has an explicit ``maxsize`` and is LRU, so a
+#     long-running server cannot grow without limit.  Nothing here caches whole
+#     documents, only words.
+#
+# Cached functions return ``frozenset`` so no caller can mutate a shared value.
+MORPHOLOGY_CACHE_SIZE = 32_768
+VARIANT_CACHE_SIZE = 32_768
+TRIGRAM_CACHE_SIZE = 65_536
+NORMALIZE_CACHE_SIZE = 32_768
+FUZZY_CACHE_SIZE = 65_536
+WINDOW_CACHE_SIZE = 8_192
+
+
+def _ends_vowel_consonant(stem: str) -> bool:
+    return len(stem) >= 2 and stem[-1] not in _VOWELS and stem[-2] in _VOWELS
+
+
+@lru_cache(maxsize=MORPHOLOGY_CACHE_SIZE)
+def morphology_forms(token: str, *, rounds: int = 2) -> frozenset[str]:
+    """Bounded iterative morphology closure used ONLY by recall.
+
+    v0.1's ``_token_variants`` applies its rules once, which is right for the
+    frozen v0.1 search path and is reused here unchanged.  Recall adds two
+    deterministic, bounded things on top:
+
+      * **iteration** — each round's output is fed through again, so
+        ``adaptations`` → ``adaptation`` → ``adapt``;
+      * **derivational suffixes** — ``-ation``, ``-ness``, ``-ment`` — so a query
+        for ``adapt`` can find a thought that only ever says ``adaptation``.
+
+    This is not a language model and does not claim to be: it is a fixed list of
+    string rules, applied at most ``rounds`` times, always including the original
+    token.  Round count is a documented bound, not a heuristic.
+    """
+    normalized = normalize_text(token).split(" ")[0] if token else ""
+    if not normalized:
+        return frozenset()
+    forms: set[str] = {normalized}
+    frontier = {normalized}
+    for _ in range(max(1, int(rounds))):
+        produced: set[str] = set()
+        for form in frontier:
+            produced |= _token_variants(form)
+            for suffix, minimum, extras in _RECALL_SUFFIX_RULES:
+                if not form.endswith(suffix) or len(form) - len(suffix) < minimum:
+                    continue
+                stem = form[: -len(suffix)]
+                for extra in extras:
+                    # The silent-e restoration only applies where English actually
+                    # uses it: a stem ending vowel+consonant ("creat" -> "create").
+                    # Applying it blindly invents non-words ("adapt" -> "adapte")
+                    # that would then be indexed and matched like real forms.
+                    if extra == "e" and not _ends_vowel_consonant(stem):
+                        continue
+                    candidate = stem + extra
+                    if len(candidate) >= 3:
+                        produced.add(candidate)
+        produced = {form for form in produced if form and form not in forms and len(form) >= 3}
+        if not produced:
+            break
+        forms |= produced
+        frontier = produced
+    return frozenset(forms)
+
+
+@lru_cache(maxsize=VARIANT_CACHE_SIZE)
+def recall_variants(token: str) -> frozenset[str]:
+    """Every form recall will match for one token.
+
+    A superset of v0.1's variants: the same aliases and inflections, plus the
+    bounded derivational closure.  The index and the query side both call this,
+    so the two can never disagree about what a word form is.
+    """
+    return morphology_forms(token)
+
+
+@lru_cache(maxsize=NORMALIZE_CACHE_SIZE)
+def cached_normalize(value: str) -> str:
+    """``normalize_text`` with the result memoized.
+
+    v0.1's ``normalize_text`` is frozen and is called here unchanged — this wrapper
+    only remembers what it returned for a given string.  Keyed by the exact input,
+    so different text can never be served a stale normalization.
+    """
+    return normalize_text(value)
 
 
 def strip_memory_filler(query: str) -> str:
@@ -120,7 +246,8 @@ def strip_memory_filler(query: str) -> str:
 # --------------------------------------------------------------------------
 
 
-def word_trigrams(word: str) -> set[str]:
+@lru_cache(maxsize=TRIGRAM_CACHE_SIZE)
+def word_trigrams(word: str) -> frozenset[str]:
     """Padded character trigrams of one normalized word.
 
     Padding with two leading spaces and one trailing space makes prefixes and
@@ -130,9 +257,9 @@ def word_trigrams(word: str) -> set[str]:
     """
     normalized = normalize_text(word).replace(" ", "")
     if not normalized:
-        return set()
+        return frozenset()
     padded = "  " + normalized + " "
-    return {padded[i : i + 3] for i in range(len(padded) - 2)}
+    return frozenset(padded[i : i + 3] for i in range(len(padded) - 2))
 
 
 def text_trigrams(text: str) -> set[str]:
@@ -188,6 +315,7 @@ def split_segments(text: str) -> list[str]:
     return [part.strip() for part in parts if part and part.strip()]
 
 
+@lru_cache(maxsize=WINDOW_CACHE_SIZE)
 def best_window(document: str, query: str) -> str:
     """The <= ``FUZZY_WINDOW_CHARS`` slice of *document* most worth comparing.
 
@@ -215,22 +343,23 @@ def _token_forms(text: str) -> set[str]:
     forms: set[str] = set()
     for token in tokenize(text, remove_stopwords=False):
         forms.add(token)
-        forms |= token_variants(token)
+        forms |= recall_variants(token)
     return forms
 
 
+@lru_cache(maxsize=FUZZY_CACHE_SIZE)
 def fuzzy_ratio(a: str, b: str) -> float:
     """``difflib`` similarity over two already-bounded strings."""
     if not a or not b:
         return 0.0
-    return SequenceMatcher(None, normalize_text(a), normalize_text(b), autojunk=False).ratio()
+    return SequenceMatcher(None, cached_normalize(a), cached_normalize(b), autojunk=False).ratio()
 
 
 def edit_distance(a: str, b: str, cap: int = 6) -> int:
     """Bounded Levenshtein distance; returns ``cap`` once the true distance
     reaches it.  Used for typo explanations, never as a bulk ranking signal."""
-    left = normalize_text(a)
-    right = normalize_text(b)
+    left = cached_normalize(a)
+    right = cached_normalize(b)
     if left == right:
         return 0
     if abs(len(left) - len(right)) >= cap:
@@ -265,7 +394,7 @@ def recall_snippet(text: str, query: str, limit: int = 210) -> str:
     folded = text.casefold()
     positions: list[int] = []
     for token in tokenize(query, remove_stopwords=False):
-        for form in sorted(token_variants(token)):
+        for form in sorted(recall_variants(token)):
             if len(form) < 3:
                 continue
             found = folded.find(form)

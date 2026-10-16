@@ -17,7 +17,7 @@ from typing import Any, Sequence
 from .config import RecallConfig
 from .filters import RecallFilters
 from .scoring import TIER_VALUES
-from .text import normalize_text, token_variants, word_trigrams
+from .text import normalize_text, recall_variants, word_trigrams
 
 
 def _round(value: Any, places: int = 6) -> Any:
@@ -371,7 +371,7 @@ def _membership_report(
             [
                 (term, form, 1.0)
                 for term in analysis.term_strings
-                for form in sorted(token_variants(term))
+                for form in sorted(recall_variants(term))
             ],
             limit=config.token_candidate_cap,
         )

@@ -372,7 +372,7 @@ class Vault:
                     # migration is auditable after the fact.
                     conn.execute(
                         "INSERT OR REPLACE INTO schema_info(key, value) VALUES('migrated_from_app_version', ?)",
-                        ("0.1.x" if previous_canonical == CANONICAL_SCHEMA_VERSION else previous_canonical),
+                        ("0.1.x" if previous_canonical == CANONICAL_SCHEMA_VERSION else previous_canonical,),
                     )
                     conn.execute(
                         "INSERT OR REPLACE INTO schema_info(key, value) VALUES('migrated_at', ?)",
@@ -392,7 +392,37 @@ class Vault:
         return row["value"] if row else None
 
     def schema_versions(self) -> dict[str, Any]:
-        """Version markers, for the diagnostics view and the migration tests."""
+        """Version markers, for the diagnostics view and the migration tests.
+
+        ``schemaVersion`` is the CANONICAL schema version and is deliberately
+        still ``"1"`` in v0.2: this release adds derived ``recall_*`` tables and
+        no canonical column, so a v0.1 file and a v0.2 file are the same canonical
+        schema and a v0.1 export still imports unchanged.  ``appVersion`` and
+        ``recallSchemaVersion`` move independently of it.
+
+        Keys are camelCase like every other public dictionary IWTT returns; the
+        literal ``schema_info`` rows stay readable with ``schema_info_rows()``, so a
+        migration can be audited against the exact stored keys without smuggling a
+        snake_case blob into a public payload.
+        """
+        with self._connection() as conn:
+            rows = conn.execute("SELECT key, value FROM schema_info ORDER BY key").fetchall()
+        raw = {row["key"]: row["value"] for row in rows}
+        return {
+            "schemaVersion": raw.get("schema_version"),
+            "canonicalSchemaVersion": raw.get("schema_version"),
+            "recallSchemaVersion": raw.get("recall_schema_version"),
+            "appVersion": raw.get("app_version"),
+            "migratedFromAppVersion": raw.get("migrated_from_app_version"),
+            "migratedAt": raw.get("migrated_at"),
+        }
+
+    def schema_info_rows(self) -> dict[str, Any]:
+        """The literal ``schema_info`` table, keys and values exactly as stored.
+
+        Deliberately snake_case, because these ARE the canonical rows: this is an
+        audit view of the database, not a public API payload.
+        """
         with self._connection() as conn:
             rows = conn.execute("SELECT key, value FROM schema_info ORDER BY key").fetchall()
         return {row["key"]: row["value"] for row in rows}
@@ -1986,6 +2016,18 @@ class Vault:
 
     def learned_queries(self, limit: int = 100) -> list[dict[str, Any]]:
         return self._recall_engine().learned_queries(limit=limit)
+
+    def external_foundation(self) -> Any:
+        """The external-knowledge foundation: interfaces and documentation only.
+
+        Creates no storage and no entities.  See EXTERNAL_KNOWLEDGE_ARCHITECTURE.md
+        for the chain this reserves room for (Thought -> Experiment -> Project ->
+        Source File -> Function -> Bug -> Fix -> New Thought) and for why none of it
+        is built in v0.2.
+        """
+        from .recall.external import foundation_payload
+
+        return foundation_payload()
 
     def rebuild_recall_indexes(self, *, full: bool = True, rebuild_clusters: bool = True) -> dict[str, Any]:
         return self._recall_engine().rebuild_indexes(full=full, rebuild_clusters=rebuild_clusters)

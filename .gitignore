@@ -7,3 +7,6 @@ __pycache__/
 *.sqlite3-wal
 backups/
 .DS_Store
+
+# development scratch — never shipped
+.scratch/

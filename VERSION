@@ -1,3 +1,7 @@
-IWTT v0.1 — THOUGHT VAULT
-Application version: 0.1.0
-Canonical export schema version: 1
+IWTT v0.2 — THOUGHT VAULT · RECALL & GRAPH INTELLIGENCE
+Application version: 0.2.0
+Canonical export schema version: 1   (UNCHANGED from v0.1 — no canonical schema change)
+Canonical schema version (schema_info.schema_version): 1
+Recall derived index schema version: 3
+Checkpoint 001 (v0.1 baseline commit): 4124dc24063380113157853b6f1879833cb3f25c
+Dependencies: Python standard library only. No pip install, no network, no AI required.

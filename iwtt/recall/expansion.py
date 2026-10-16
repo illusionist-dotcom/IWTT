@@ -81,8 +81,14 @@ def provenance_weight(provenance: str, status: str, config: RecallConfig) -> flo
         AI_SUGGESTED   + CONFIRMED  → 0.70   the user consented; origin preserved
         AI_SUGGESTED   + SUGGESTED  → 0.35   a proposal, nothing more
         USER_CONFIRMED + SUGGESTED  → 0.35   (not producible by v0.1, handled anyway)
-        anything       + REMOVED    → excluded before this function is called
+        anything       + REMOVED    → 0.00   never traversed
+
+    REMOVED returns zero here as well as being filtered out of the edge queries.
+    Both layers are kept on purpose: a caller that forgets the filter must still
+    be unable to traverse a relationship the user deleted.
     """
+    if status == "REMOVED":
+        return 0.0
     if status != "CONFIRMED":
         return config.weight_ai_suggested
     if provenance == "USER_CONFIRMED":
@@ -299,6 +305,18 @@ def expand_neighbourhood(
             edges = _fetch_edges(conn, [item[0] for item in current])
             diagnostics["edgesExamined"] += len(edges)
 
+            # Prefetch every endpoint this depth can reach, in one query each.
+            # Fetching per neighbour inside the edge loop is an N+1: bounded by the
+            # node budget, but it turns graph expansion into hundreds of round trips
+            # per query for no benefit.
+            endpoints = sorted({edge[1] for edge in edges} | {edge[2] for edge in edges})
+            missing_degrees = [node for node in endpoints if node not in degrees]
+            if missing_degrees:
+                degrees.update(_fetch_degrees(conn, missing_degrees))
+            missing_titles = [node for node in endpoints if node not in titles]
+            if missing_titles:
+                titles.update(_fetch_titles(conn, missing_titles))
+
             next_frontier: list[tuple[str, int, str, float, tuple[str, ...]]] = []
             incident: dict[str, list[tuple]] = {}
             for edge in edges:
@@ -373,9 +391,15 @@ def expand_neighbourhood(
 
             frontier = next_frontier
 
-    # Seeds never receive a graph contribution from themselves.
+    # A seed never receives a graph contribution *from itself*.  A seed may still
+    # be enriched by a DIFFERENT seed it is linked to — that contribution is real
+    # evidence ("you connected these two yourself"), and dropping it would make the
+    # rule wider than its own docstring.  So the pop is keyed on origin, not on
+    # membership of the seed set.
     for seed_id in eligible:
-        signals.pop(seed_id, None)
+        signal = signals.get(seed_id)
+        if signal is not None and signal.origin == seed_id:
+            signals.pop(seed_id, None)
 
     diagnostics["nodesReached"] = len(signals)
     diagnostics["expandedNodes"] = expanded

@@ -14,6 +14,8 @@ Search documents and AI artifacts are derived and are excluded from the normal e
 
 The JSON is UTF-8, human-inspectable, and portable. UUIDs are preserved. `exportedAt` is a wrapper timestamp, not a thought modification.
 
+**v0.2 note:** the canonical contract is unchanged — `iwtt-vault-export`, **schema version 1**, with `appVersion` now `0.2.0`. A v0.1 export imports into v0.2 unchanged; a v0.2 export imports into v0.1. `export_vault(include_derived=True)` adds an optional `derived.recall` section containing index *statistics* only. Recall scores, ranks, explanations, clusters, graph caches and query-outcome memory are derived and are never needed for a faithful restore — they rebuild themselves from canonical records on first use.
+
 ## Import instructions
 
 1. In **Data & privacy**, choose **Import JSON**.

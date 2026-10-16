@@ -1,4 +1,4 @@
-# IWTT v0.1 Event and History Model
+# IWTT v0.2 Event and History Model
 
 IWTT does not infer history from only the current thought row. Mutations that change meaningful state are recorded as append-style event rows with:
 
@@ -33,6 +33,20 @@ The event vocabulary can grow without changing the thought's durable ID or repla
 Timeline is a chronological view over event rows. Thought events open the thought; relationship events carry endpoint context and open the source thought. The thought-detail history includes events targeting that thought plus events targeting its relationships. Revision snapshots are displayed separately so the user can inspect previous content.
 
 A thought that was created as `THOUGHT`, promoted through other lifecycle types, sent to the Graveyard, and later resurrected remains one thought ID with a traceable event/revision sequence. The Graveyard timestamp is retained after resurrection.
+
+## v0.2 writes no canonical events
+
+Recall, graph expansion, clustering and query-outcome memory write **only** to
+`recall_*` tables. In particular, feedback such as "this result was useful" is *not*
+recorded in the canonical event log: the event log is the record of what the user did
+to their memories, and a search outcome is not that. The Graphify research dossier
+recommended putting outcome signals in the canonical event log (its ADAPT #17); that
+recommendation was rejected, and the reasoning is recorded in
+[GRAPHIFY_ADAPTATION_NOTES.md](GRAPHIFY_ADAPTATION_NOTES.md) §5.
+
+`Vault.search()`, `Vault.recall()` and every graph read path are event-silent. The only
+v0.2 write that touches anything user-visible is `recall_query_memory`, which
+`reset_recall_learning()` erases completely.
 
 ## Scope note
 

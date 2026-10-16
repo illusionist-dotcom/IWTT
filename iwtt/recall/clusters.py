@@ -216,15 +216,30 @@ def rebuild_clusters(index: RecallIndex, config: RecallConfig | None = None) -> 
         ((label, sorted(members)) for label, members in grouped.items()),
         key=lambda item: (-len(item[1]), item[0]),
     )
+    # Inverted index: member -> the old clusters containing it.  Only old clusters
+    # that actually share a member can possibly win, so this replaces an
+    # all-pairs scan (clusters_old x clusters_new, which is ~57 million
+    # intersections at 10,000 thoughts) with work proportional to the membership
+    # rows.  The winner is chosen by exactly the same rule and in the same
+    # deterministic order as before, so cluster identities do not change.
+    old_ids_by_member: dict[str, list[str]] = {}
+    for old_id, old_members in previous_members.items():
+        for member in old_members:
+            old_ids_by_member.setdefault(member, []).append(old_id)
     for label, members in candidates:
         fingerprint = _member_fingerprint(members)
         new_set = set(members)
+        overlaps: dict[str, int] = {}
+        for member in members:
+            for old_id in old_ids_by_member.get(member, ()):
+                overlaps[old_id] = overlaps.get(old_id, 0) + 1
         best_old: str | None = None
         best_overlap = 0
-        for old_id, old_members in sorted(previous_members.items()):
+        for old_id in sorted(overlaps):
+            old_members = previous_members.get(old_id) or set()
             if old_id in used or not old_members:
                 continue
-            overlap = len(new_set & old_members)
+            overlap = overlaps[old_id]
             if overlap <= best_overlap:
                 continue
             majority_of_new = overlap * 2 > len(new_set)
@@ -240,16 +255,23 @@ def rebuild_clusters(index: RecallIndex, config: RecallConfig | None = None) -> 
         else:
             remapped[label] = "c-" + fingerprint[:12]
 
+    # Internal edge counts in a single pass over the edges, using the label each
+    # endpoint ended up with.  Counting per cluster by rescanning every pair — and
+    # rebuilding ``set(members)`` inside the comprehension for each one — was
+    # O(clusters x edges x members), which dominated the rebuild at 10,000
+    # thoughts.  This is O(edges) and produces identical counts.
+    internal_by_label: dict[str, int] = {}
+    for (a, b) in pair_weights:
+        label_a = assignments.get(a)
+        if label_a is not None and label_a == assignments.get(b):
+            internal_by_label[label_a] = internal_by_label.get(label_a, 0) + 1
+
     rows: list[tuple] = []
     summaries: list[dict[str, Any]] = []
     for label in sorted(grouped):
         members = sorted(grouped[label])
         cluster_id = remapped[label]
-        internal_edges = sum(
-            1
-            for (a, b) in pair_weights
-            if a in set(members) and b in set(members)
-        )
+        internal_edges = internal_by_label.get(label, 0)
         cohesion = cohesion_score(len(members), internal_edges)
         display = choose_cluster_label(
             members, degrees=degrees, titles=titles, created=created
@@ -341,6 +363,13 @@ def cluster_summary(index: RecallIndex) -> list[dict[str, Any]]:
             "thought_id FROM recall_clusters ORDER BY cluster_size DESC, cluster_id, thought_id"
         ).fetchall()
         edges = index.live_edges(conn)
+        # Display labels for members, read live from canonical data.  The cluster
+        # table stores ids only: a derived row must never be the place a title is
+        # read from, or a stale index would show a stale name.
+        titles = {
+            row["id"]: _display_title(row["title"] or "", row["current_text"] or row["original_text"])
+            for row in conn.execute("SELECT id, title, current_text, original_text FROM thoughts")
+        }
     grouped: dict[str, dict[str, Any]] = {}
     for row in rows:
         entry = grouped.setdefault(row["cluster_id"], {
@@ -362,4 +391,7 @@ def cluster_summary(index: RecallIndex) -> list[dict[str, Any]]:
         )
         entry["internalEdges"] = internal
         entry["cohesion"] = round(cohesion_score(len(member_set), internal), 4)
+        entry["memberTitles"] = {
+            thought_id: titles.get(thought_id, thought_id) for thought_id in entry["members"]
+        }
     return sorted(grouped.values(), key=lambda item: (-item["size"], item["clusterId"]))

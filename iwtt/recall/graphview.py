@@ -88,7 +88,7 @@ def build_graph_view_model(
         thoughts = {row["id"]: row for row in thought_rows}
 
         if root_ids:
-            selected = _select_by_roots(
+            selected, reachable = _select_by_roots(
                 conn, [rid for rid in root_ids if rid in thoughts], thoughts, cache, max_nodes, config
             )
         else:
@@ -97,6 +97,8 @@ def build_graph_view_model(
                 key=lambda tid: (-cache.get(tid, (0, 1.0, 0.0))[2], tid),
             )
             selected = ordered[:max_nodes]
+            reachable = len(ordered)
+        truncated = reachable > len(selected)
 
         selected_set = set(selected)
         edges: list[dict[str, Any]] = []
@@ -177,7 +179,28 @@ def build_graph_view_model(
             "includeGraveyard": include_graveyard,
             "includeSuggested": include_suggested,
             "selection": "root-neighbourhood" if root_ids else "importance-desc",
+            "reachableNodes": reachable,
+            "returnedNodes": len(nodes),
+            "truncated": truncated,
+            "note": (
+                f"Showing {len(nodes)} of {reachable} reachable thoughts. This is a bounded "
+                f"view, never the whole vault in memory."
+                if truncated else
+                f"Showing all {len(nodes)} reachable thoughts within the {max_nodes}-node budget."
+            ),
         },
+        #: Which fields are the user's knowledge and which are IWTT's computation.
+        #: Published so a renderer can style them differently and so a reviewer can
+        #: check the boundary without reading the source.
+        "canonicalFields": [
+            "id", "displayLabel", "lifecycleState", "status", "createdAt", "isDemo",
+            "edges.type", "edges.provenance", "edges.status", "edges.source", "edges.target",
+        ],
+        "derivedFields": [
+            "degree", "hubFactor", "importance", "isHub", "clusterId", "clusterLabel",
+            "clusterAuthority", "edges.weight", "edges.label", "edges.reverseLabel",
+            "edges.display", "edges.symmetric", "nodeCount", "edgeCount", "bounds",
+        ],
         "entityKinds": {
             ENTITY_THOUGHT: "A human thought. Canonical.",
             ENTITY_EXTERNAL: (
@@ -196,10 +219,13 @@ def _select_by_roots(
     cache: dict[str, tuple[int, float, float]],
     max_nodes: int,
     config: RecallConfig,
-) -> list[str]:
-    """Breadth-first neighbourhood of the roots, nearest first."""
+) -> tuple[list[str], int]:
+    """Breadth-first neighbourhood of the roots, nearest first.
+
+    Returns ``(selected, reachable)`` so the caller can report truncation.
+    """
     if not roots:
-        return []
+        return [], 0
     selected: list[str] = []
     seen: set[str] = set()
     frontier = [root for root in dict.fromkeys(roots) if root in thoughts]
@@ -207,6 +233,8 @@ def _select_by_roots(
         if root not in seen:
             seen.add(root)
             selected.append(root)
+    if not frontier:
+        return [], 0
     while frontier and len(selected) < max_nodes:
         marks = ",".join("?" for _ in frontier)
         neighbours: list[str] = []
@@ -228,7 +256,10 @@ def _select_by_roots(
                 break
             selected.append(candidate)
         frontier = neighbours
-    return selected
+    # ``seen`` is the reachable set, whether or not the node budget allowed it to
+    # be returned.  Reporting it is what makes truncation honest: the caller can
+    # say "showing 200 of 1 340 reachable" instead of implying this is everything.
+    return selected, len(seen)
 
 
 def _edge_rows(

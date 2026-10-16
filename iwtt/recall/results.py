@@ -50,6 +50,7 @@ EXPLANATION_LABELS: dict[str, str] = {
     "QUERY_COVERAGE": "Covers most of your query",
     "PARTIAL_COVERAGE": "Covers part of your query",
     "FUZZY_TEXT": "Fuzzy text match",
+    "NO_LEXICAL_EVIDENCE": "No word in common — similarity suppressed",
     "TRIGRAM": "Similar spelling",
     "TYPO_TOLERATED": "Matched despite a spelling difference",
     "TITLE_MATCH": "Title match",
@@ -96,6 +97,23 @@ class Explanation:
         }
 
 
+def camel_case(name: str) -> str:
+    """``exact_phrase`` -> ``exactPhrase``.
+
+    IWTT's public dictionaries are camelCase everywhere (a v0.1 convention the
+    web UI and the HTTP API depend on).  Dataclass fields stay snake_case, which
+    is the Python convention, so the boundary is crossed here once rather than by
+    hand in every ``to_dict``.
+    """
+    head, *rest = name.split("_")
+    return head + "".join(part[:1].upper() + part[1:] for part in rest)
+
+
+def public_dict(instance: Any) -> dict[str, Any]:
+    """``asdict`` with the field names converted to the public convention."""
+    return {camel_case(key): value for key, value in asdict(instance).items()}
+
+
 @dataclass
 class SignalScores:
     """Per-signal values BEFORE weighting.  This is the diagnostic surface."""
@@ -109,6 +127,12 @@ class SignalScores:
     coverage_matched: tuple[str, ...] = ()
     coverage_missing: tuple[str, ...] = ()
     coverage_ratio: float = 0.0
+    #: False when no query term matched this thought at all.  Reported so the UI
+    #: and the diagnostics can say "this is a coincidence, not a match".
+    lexical_evidence: bool = True
+    #: What the fuzzy/trigram signals WOULD have been before the gate zeroed them.
+    gated_fuzzy: float = 0.0
+    gated_trigram: float = 0.0
     trigram: float = 0.0
     trigram_shared: int = 0
     trigram_dot: float = 0.0
@@ -137,12 +161,12 @@ class SignalScores:
     tier_hits: tuple[tuple[str, str, str], ...] = ()       # (term, tier, matched_form)
 
     def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        for key in ("coverage_matched", "coverage_missing", "tag_hits", "graph_path"):
+        data = public_dict(self)
+        for key in ("coverageMatched", "coverageMissing", "tagHits", "graphPath"):
             data[key] = list(data[key])
-        data["idf_terms"] = [[t, round(w, 4), round(tier, 4)] for t, w, tier in self.idf_terms]
-        data["tier_hits"] = [[t, tier, form] for t, tier, form in self.tier_hits]
-        data["query_memory_detail"] = list(data["query_memory_detail"])
+        data["idfTerms"] = [[t, round(w, 4), round(tier, 4)] for t, w, tier in self.idf_terms]
+        data["tierHits"] = [[t, tier, form] for t, tier, form in self.tier_hits]
+        data["queryMemoryDetail"] = list(data["queryMemoryDetail"])
         return data
 
 
@@ -163,7 +187,7 @@ class RelationshipContext:
     relationship_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
+        data = public_dict(self)
         data["via"] = list(data["via"])
         return data
 

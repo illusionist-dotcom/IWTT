@@ -1,4 +1,4 @@
-/* IWTT v0.1 — local-first Thought Vault UI */
+/* IWTT v0.2 — local-first Thought Vault UI (Recall & Graph Intelligence) */
 (() => {
   const app = document.getElementById('app-view');
   const state = {
@@ -10,6 +10,21 @@
     vaultType: 'ALL',
     searchTimer: null,
     renderToken: 0,
+    // v0.2 — Find My Thought.  Kept separate from the v0.1 `query`/`search`
+    // state so classic search behaves exactly as it did before.
+    recall: {
+      query: '',
+      outcome: null,
+      time: '',
+      includeGraveyard: true,
+      type: '',
+      loading: false,
+      timer: null,
+      breakdownFor: null,
+      breakdown: null,
+    },
+    // v0.2 — Connection Explorer V2
+    graph: { rootId: null, sourceId: '', targetId: '', path: null, neighbourhood: null, depth: 1 },
   };
 
   const TYPE_NAMES = { THOUGHT: 'Thought', EXPERIMENT: 'Experiment', INVENTION: 'Invention', PROJECT: 'Project' };
@@ -55,7 +70,8 @@
   }
 
   function setTopbar() {
-    const label = state.view === 'detail' ? 'THOUGHT DETAIL' : state.view.toUpperCase().replace('DATA', 'DATA & PRIVACY');
+    const LABELS = { data: 'DATA & PRIVACY', recall: 'FIND MY THOUGHT', clusters: 'DERIVED CLUSTERS', connections: 'CONNECTION EXPLORER' };
+    const label = state.view === 'detail' ? 'THOUGHT DETAIL' : (LABELS[state.view] || state.view.toUpperCase());
     document.getElementById('topbar-label').textContent = label;
     const activeView = state.view === 'detail' ? state.parentView : state.view;
     document.querySelectorAll('.nav-item[data-view]').forEach(button => {
@@ -75,7 +91,7 @@
     if (view === 'detail') return;
     state.view = view;
     state.thoughtId = null;
-    if (view !== 'search' && !options.preserveQuery) state.query = '';
+    if (view !== 'search' && view !== 'recall' && !options.preserveQuery) state.query = '';
     setTopbar();
     window.scrollTo({ top: 0, behavior: 'smooth' });
     await render();
@@ -103,6 +119,8 @@
         case 'timeline': markup = await renderTimeline(); break;
         case 'graveyard': markup = await renderGraveyard(); break;
         case 'connections': markup = await renderConnections(); break;
+        case 'recall': markup = await renderRecall(); break;
+        case 'clusters': markup = await renderClusters(); break;
         case 'data': markup = await renderData(); break;
         case 'detail': markup = await renderDetail(); break;
         default: state.view = 'capture'; markup = await renderCapture();
@@ -120,6 +138,13 @@
         if (input && state.query) {
           input.focus({ preventScroll: true });
           input.setSelectionRange(input.value.length, input.value.length);
+        }
+      }
+      if (state.view === 'recall') {
+        const input = document.getElementById('recall-input');
+        if (input) {
+          input.focus({ preventScroll: true });
+          if (state.recall.query) input.setSelectionRange(input.value.length, input.value.length);
         }
       }
     } catch (error) {
@@ -235,6 +260,408 @@
     } catch (error) {
       summary.textContent = error.message;
     }
+  }
+
+  /* ======================= v0.2 · FIND MY THOUGHT (Recall V2) =======================
+     Product surface for deterministic recall.  Two rules shape every pixel here:
+       1. what the user WROTE is rendered in a distinct canonical block, verbatim;
+       2. everything IWTT computed (score, reasons, connections, clusters) is
+          rendered in a visually separate derived block and labelled as derived.
+     Diagnostics live behind a <details> disclosure — recall is a feature, not a
+     developer dashboard.
+     ========================================================================== */
+
+  const RECALL_STATES = {
+    STRONG_MATCH: { label: 'Strong match', className: 'strong' },
+    POSSIBLE_MATCH: { label: 'Possible match', className: 'possible' },
+    AMBIGUOUS: { label: 'Several likely memories', className: 'ambiguous' },
+    NO_MATCH: { label: 'Nothing conclusive', className: 'none' },
+  };
+  const RESULT_STATES = {
+    STRONG: 'strong', POSSIBLE: 'possible', AMBIGUOUS: 'ambiguous',
+  };
+  const TIME_WINDOWS = ['', 'today', 'yesterday', 'this week', 'last week', 'this month', 'last month', 'this year', 'last year', 'last 7 days', 'last 30 days'];
+
+  function recallQuery(params = {}) {
+    const query = new URLSearchParams();
+    query.set('q', state.recall.query);
+    query.set('include_graveyard', state.recall.includeGraveyard ? 'true' : 'false');
+    if (state.recall.time) query.set('time', state.recall.time);
+    if (state.recall.type) query.set('types', state.recall.type);
+    if (params.limit) query.set('limit', String(params.limit));
+    return `/api/recall/find?${query.toString()}`;
+  }
+
+  async function runRecall() {
+    const region = document.getElementById('recall-results');
+    const summary = document.getElementById('recall-summary');
+    if (!state.recall.query) {
+      state.recall.outcome = null;
+      if (region) region.innerHTML = recallEmpty();
+      if (summary) summary.textContent = 'Recall runs entirely on this device.';
+      return;
+    }
+    state.recall.loading = true;
+    if (summary) summary.textContent = 'Recalling…';
+    try {
+      const { data } = await api(recallQuery());
+      state.recall.outcome = data;
+      state.recall.loading = false;
+      if (region) region.innerHTML = recallResults(data);
+      if (summary) summary.textContent = recallSummaryLine(data);
+    } catch (error) {
+      state.recall.loading = false;
+      if (summary) summary.textContent = error.message;
+      if (region) region.innerHTML = `<div class="empty-state"><div class="empty-icon">!</div><h3>Recall failed</h3><p>${esc(error.message)}</p></div>`;
+    }
+  }
+
+  function recallSummaryLine(data) {
+    const ms = data.timingsMs?.total;
+    const parts = [
+      `${data.resultCount} candidate${data.resultCount === 1 ? '' : 's'}`,
+      `${data.candidatesExamined} examined`,
+      data.stateLabel || data.state,
+    ];
+    if (typeof ms === 'number') parts.push(`${ms.toFixed(1)} ms`);
+    parts.push('local · no AI · no network');
+    return parts.join(' · ');
+  }
+
+  function recallEmpty() {
+    return `<div class="empty-state"><div class="empty-icon">✦</div><h3>Describe the thought you half-remember</h3>
+      <p>A fragment is enough: a phrase you think you used, a rough idea, something it was connected to, when you wrote it, or whether it is in the Graveyard. IWTT searches word forms, typos, character patterns, titles, tags, time and saved connections — then shows you what you actually wrote.</p>
+      <p class="revision-note">No embeddings, no cloud, no AI. Identical input always produces identical ordering.</p></div>`;
+  }
+
+  function explanationChips(explanations) {
+    return (explanations || []).map(item => `<span class="explain-chip" title="${attr(item.detail || '')}">${esc(item.label)}</span>`).join('');
+  }
+
+  function recallCard(result, outcome) {
+    const stateMeta = RECALL_STATES[result.state] || { label: result.state, className: 'possible' };
+    const written = result.whatIActuallyWrote || {};
+    const context = result.relationshipContext;
+    const cluster = result.cluster;
+    const edited = written.currentText && written.currentText !== written.originalText;
+    const ambiguous = outcome?.state === 'AMBIGUOUS';
+    return `<article class="recall-card ${RESULT_STATES[result.state] || 'possible'}" data-thought="${attr(result.thoughtId)}">
+      <header class="recall-head">
+        <span class="recall-rank">${result.rank}</span>
+        <div class="recall-head-main">
+          <div class="result-meta">
+            <span class="state-pill ${stateMeta.className}">${esc(stateMeta.label)}</span>
+            ${typePill(result.type)}${statusPill(result.status)}${demoPill(result.isDemo)}
+            <span class="score-pill" title="Weighted score out of ${(outcome?.analysis?.theoreticalMax || 21.25)}">${result.score.toFixed(2)}</span>
+          </div>
+          <h3><button class="connection-target" data-open-thought="${attr(result.thoughtId)}">${esc(result.displayTitle)}</button></h3>
+        </div>
+        <div class="result-date">${esc(date(result.createdAt, true))}<br><span class="micro">originally captured</span></div>
+      </header>
+
+      <div class="canonical-block">
+        <div class="block-label"><span class="dot canonical"></span>WHAT YOU WROTE <em>canonical · immutable</em></div>
+        <p class="original-text">${esc(written.originalText || result.snippet)}</p>
+        ${edited ? `<p class="revision-note">Current text has since been edited to: “${esc(words(written.currentText, 220))}”. The original capture above is unchanged and can never be overwritten.</p>` : ''}
+        <div class="tag-list">${(result.tags || []).map(tag => `<span class="tag-chip">${esc(tag)}</span>`).join('')}</div>
+      </div>
+
+      <div class="derived-block">
+        <div class="block-label"><span class="dot derived"></span>WHY IWTT MATCHED IT <em>derived · rebuildable</em></div>
+        <p class="why-line">${esc(result.why)}</p>
+        <div class="explain-row">${explanationChips(result.explanations)}</div>
+        ${result.matchReason ? `<p class="micro">v0.1-compatible match reason: <strong>${esc(result.matchReason)}</strong></p>` : ''}
+        ${context ? `<p class="micro">Reached through a connection: <strong>${esc(context.displayTitle)}</strong> ${esc(context.label)} this thought · ${esc(context.display)}${context.depth > 1 ? ` · ${context.depth} hops` : ''}</p>` : ''}
+        ${cluster && cluster.clusterId ? `<p class="micro">Sits in ${esc(cluster.label || 'an automatically discovered cluster')} · ${esc(cluster.size || 0)} member${cluster.size === 1 ? '' : 's'} · derived, never canonical</p>` : ''}
+        ${result.status === 'GRAVEYARD' ? `<p class="micro">In the Graveyard since ${esc(date(result.graveyardAt))}${result.resurrectedAt ? ` · resurrected ${esc(date(result.resurrectedAt))}` : ''}. Shown because you asked for it; nothing was silently excluded.</p>` : ''}
+        ${ambiguous && (result.rivals || []).length ? `<p class="micro">What separates it from the others: ${result.rivals.map(esc).join('; ')}</p>` : ''}
+      </div>
+
+      <footer class="recall-foot">
+        <button class="button primary small" data-open-thought="${attr(result.thoughtId)}">Open what I wrote</button>
+        <button class="button small" data-action="recall-feedback" data-feedback="USEFUL" data-id="${attr(result.thoughtId)}" data-rank="${result.rank}">This is it</button>
+        <button class="button ghost small" data-action="recall-feedback" data-feedback="NOT_USEFUL" data-id="${attr(result.thoughtId)}" data-rank="${result.rank}">Not this</button>
+        <button class="button ghost small" data-action="recall-breakdown" data-id="${attr(result.thoughtId)}">Scoring breakdown</button>
+      </footer>
+    </article>`;
+  }
+
+  function recallBanner(outcome) {
+    if (outcome.state === 'AMBIGUOUS') {
+      return `<div class="recall-banner ambiguous" role="status">
+        <strong>${esc(outcome.headline || 'I found several likely memories')}</strong>
+        <p>${esc(outcome.message)}</p>
+        ${outcome.ambiguity?.orderingIsTieBreakNotJudgement ? '<p class="micro">The order below is a deterministic tie-break, not a judgement that one is better.</p>' : ''}
+      </div>`;
+    }
+    if (outcome.state === 'NO_MATCH') {
+      const excluded = outcome.honesty?.filteredOut;
+      return `<div class="recall-banner none" role="status">
+        <strong>${esc(outcome.headline || 'I could not find that thought')}</strong>
+        <p>${esc(outcome.message)}</p>
+        ${excluded && excluded.totalExcluded ? `<p class="micro">Hidden by your filters: ${Object.entries(excluded.byReason).map(([reason, count]) => `${count} × ${esc(excluded.labels[reason] || reason)}`).join(', ')}. ${(excluded.examples?.status || excluded.examples?.time || []).map(esc).join(' · ')}</p>` : ''}
+      </div>`;
+    }
+    if (outcome.state === 'POSSIBLE_MATCH') {
+      return `<div class="recall-banner possible" role="status"><strong>${esc(outcome.headline || 'This may be the thought you meant')}</strong><p>${esc(outcome.message)}</p></div>`;
+    }
+    return `<div class="recall-banner strong" role="status"><strong>${esc(outcome.headline || 'This looks like the thought you meant')}</strong><p>${esc(outcome.message)}</p></div>`;
+  }
+
+  function recallBreakdownPanel() {
+    const data = state.recall.breakdown;
+    if (!data) return '';
+    const result = data.result;
+    if (!result) return `<section class="panel breakdown-panel"><p class="micro">${esc(data.result?.reason || 'That thought was not in the returned set for this query.')}</p></section>`;
+    const rows = Object.entries(result.contributions || {}).map(([name, item]) => `
+      <tr><td>${esc(name)}</td><td class="num">${item.weight}</td><td class="num">${(item.signal ?? 0).toFixed(4)}</td><td class="num">${item.contribution.toFixed(4)}</td></tr>`).join('');
+    const terms = (result.perTerm || []).map(term => `
+      <tr><td>${esc(term.term)}</td><td>${esc(term.tier)}</td><td>${esc(term.matchedForm || '—')}</td><td class="num">${term.idf}</td><td class="num">${(term.tierValue ?? 0).toFixed(4)}</td><td class="num">${term.contributionToScore.toFixed(4)}</td></tr>`).join('');
+    return `<section class="panel breakdown-panel">
+      <div class="section-head" style="margin-top:0"><h2>Scoring breakdown</h2><span class="section-meta">DERIVED · DEBUG VIEW</span></div>
+      <p class="micro">${esc(result.displayTitle)} · score <strong>${result.score}</strong> · ${esc(result.matchReason)}</p>
+      <h4>Weighted signals</h4>
+      <table class="breakdown-table"><thead><tr><th>signal</th><th>weight</th><th>signal value</th><th>contribution</th></tr></thead><tbody>${rows}</tbody></table>
+      <h4>Per-term lexical tiers</h4>
+      <table class="breakdown-table"><thead><tr><th>query term</th><th>tier</th><th>matched form</th><th>idf</th><th>tier value</th><th>contribution</th></tr></thead><tbody>${terms}</tbody></table>
+      <p class="micro">idf signal = Σ(idf × tierValue) / Σ(idf) = <strong>${(result.idfSignal?.value ?? 0).toFixed(4)}</strong> · coverage ${JSON.stringify(result.coverage?.matched || [])} of ${JSON.stringify([...(result.coverage?.matched || []), ...(result.coverage?.missing || [])])}</p>
+      <h4>Candidate generation</h4>
+      <p class="micro">${esc(data.candidateGeneration?.guardExplanation || '')}</p>
+      <p class="micro">${esc(data.candidateGeneration?.fuzzyPassExplanation || '')} Candidates in the fuzzy pass: ${data.candidateGeneration?.fuzzyPassCandidates ?? 0} of a cap of ${data.candidateGeneration?.fuzzyPassCap ?? 0}.</p>
+      <h4>Tie-break (total order)</h4>
+      <p class="micro">${esc((data.tieBreak?.order || []).join(' → '))} — ${esc(data.tieBreak?.explanation || '')}</p>
+      <h4>Honesty</h4>
+      <ul class="honesty-list">${Object.entries(data.honesty || {}).filter(([key]) => typeof data.honesty[key] === 'string').map(([key, value]) => `<li><strong>${esc(key)}</strong>: ${esc(value)}</li>`).join('')}</ul>
+      <details class="sub-details"><summary>Full formula and weights</summary><pre class="formula">${esc(data.scoringFormula || '')}</pre><pre class="formula">${esc(JSON.stringify(data.weights, null, 2))}</pre></details>
+    </section>`;
+  }
+
+  function recallResults(outcome) {
+    if (!outcome) return recallEmpty();
+    const results = outcome.results || [];
+    const cards = results.map(result => recallCard(result, outcome)).join('');
+    return `${recallBanner(outcome)}
+      ${results.length ? `<div class="section-head" style="margin-top:0"><h2>Ranked candidates</h2><span class="section-meta">ORIGINAL TEXT ALWAYS SHOWN</span></div><div class="recall-stack">${cards}</div>` : ''}
+      <div id="recall-breakdown">${recallBreakdownPanel()}</div>
+      <section class="panel honesty-panel">
+        <div class="section-head" style="margin-top:0"><h2>How this answer was produced</h2><span class="section-meta">NO AI · NO NETWORK · NO EMBEDDINGS</span></div>
+        <ul class="honesty-list">
+          <li><strong>Retrieval</strong>: lexical tiers (exact › word form › prefix › substring), character trigrams, bounded fuzzy similarity, IDF weighting, coverage, titles, tags, time, lifecycle and saved connections.</li>
+          <li><strong>Ranking</strong>: a deterministic weighted sum with a total-order tie-break. The same vault, query and configuration always produce the same order.</li>
+          <li><strong>Not implemented</strong>: ${esc(outcome.honesty?.embeddings || 'no embeddings, no vector index, no semantic stage.')}</li>
+          <li><strong>Graph expansion</strong>: enriches candidates only; it never replaces text retrieval, and it never invents a connection.</li>
+        </ul>
+        <details class="sub-details"><summary>Stage timings &amp; index state</summary><pre class="formula">${esc(JSON.stringify({ timingsMs: outcome.timingsMs, indexState: outcome.indexState, graph: outcome.graph?.expansion }, null, 2))}</pre></details>
+      </section>`;
+  }
+
+  async function renderRecall() {
+    let outcome = null;
+    if (state.recall.query) {
+      try { outcome = (await api(recallQuery())).data; } catch (error) { outcome = null; toast(error.message, 'error'); }
+    }
+    state.recall.outcome = outcome;
+    const types = ['', 'THOUGHT', 'EXPERIMENT', 'INVENTION', 'PROJECT'];
+    return `<section class="search-hero recall-hero">
+        <span class="eyebrow">FIND MY THOUGHT · RECALL V2</span>
+        <h1>Remember a fragment. Get the thought back.</h1>
+        <p>A phrase, a rough idea, a connection, a time, or a lifecycle state. IWTT returns ranked candidates, what you actually wrote, why each one matched, and what it is connected to — and it says so when it is not sure.</p>
+        <form id="recall-form" class="recall-form" role="search">
+          <div class="search-box-large"><span class="search-glass" aria-hidden="true">✦</span>
+            <input id="recall-input" type="search" value="${attr(state.recall.query)}" placeholder="“the idea about enemies learning from the player…”" autocomplete="off">
+            <button class="button ghost small" data-action="clear-recall" ${state.recall.query ? '' : 'hidden'} aria-label="Clear">×</button>
+          </div>
+          <div class="recall-filters">
+            <label>When <select id="recall-time">${TIME_WINDOWS.map(value => `<option value="${attr(value)}" ${state.recall.time === value ? 'selected' : ''}>${esc(value || 'any time')}</option>`).join('')}</select></label>
+            <label>Type <select id="recall-type">${types.map(value => `<option value="${attr(value)}" ${state.recall.type === value ? 'selected' : ''}>${esc(value ? (TYPE_NAMES[value] || value) : 'any type')}</option>`).join('')}</select></label>
+            <span class="checkbox-control"><input type="checkbox" id="recall-graveyard" ${state.recall.includeGraveyard ? 'checked' : ''}><label for="recall-graveyard">Include Graveyard</label></span>
+            <button class="button primary small" type="submit">Find my thought</button>
+            <span class="search-summary" id="recall-summary">${outcome ? esc(recallSummaryLine(outcome)) : 'Recall runs entirely on this device.'}</span>
+          </div>
+        </form>
+      </section>
+      <div id="recall-results">${recallResults(outcome)}</div>`;
+  }
+
+  /* ======================= v0.2 · DERIVED CLUSTERS ======================= */
+
+  async function renderClusters() {
+    const [{ data }, { data: learning }] = await Promise.all([api('/api/clusters'), api('/api/recall/learning')]);
+    const clusters = data.clusters || [];
+    return `<section class="view-heading"><div><span class="eyebrow">DERIVED ORGANISATION · NEVER CANONICAL</span><h1>Automatically discovered clusters.</h1><p>Groupings IWTT computes from your saved connections and labels. They are a reading of the graph, not a fact about your thoughts: delete all derived data and they disappear without losing anything.</p></div>
+        <div class="heading-actions"><button class="button" data-action="rebuild-clusters">Recompute clusters</button><button class="button ghost" data-view="connections">Connection Explorer</button></div></section>
+      ${clusters.length ? `<div class="cluster-grid">${clusters.map(cluster => `
+        <section class="panel cluster-card">
+          <div class="block-label"><span class="dot derived"></span>${esc(cluster.authority || 'AUTOMATICALLY_DISCOVERED_CLUSTER')} <em>${esc(cluster.algorithm || '')}</em></div>
+          <h3>${esc(cluster.label || 'Unnamed cluster')}</h3>
+          <p class="micro">${cluster.size} member${cluster.size === 1 ? '' : 's'} · cohesion ${(cluster.cohesion ?? 0).toFixed(3)} · id <code>${esc(cluster.clusterId)}</code></p>
+          <ul class="cluster-members">${(cluster.members || []).slice(0, 8).map(id => `<li><button class="connection-target" data-open-thought="${attr(id)}">${esc((cluster.memberTitles || {})[id] || id.slice(0, 8))}</button></li>`).join('')}</ul>
+          ${cluster.size > 8 ? `<p class="micro">+ ${cluster.size - 8} more</p>` : ''}
+        </section>`).join('')}</div>` : emptyState('No clusters yet', 'Clusters appear once thoughts are connected to each other. They are computed locally with a deterministic algorithm (connected components plus label propagation).', 'Open the Connection Explorer', 'connections')}
+      <section class="panel">
+        <div class="section-head" style="margin-top:0"><h2>Query-outcome memory</h2><span class="section-meta">DERIVED · DECAYING · RESETTABLE</span></div>
+        <p class="micro">When you mark a result useful or not, IWTT remembers — for that phrasing only, with a 180-day half-life, gated until an outcome is corroborated twice. It never edits a thought, never confirms a relationship, and never survives a reset.</p>
+        <p class="micro">Events stored: <strong>${learning.stats?.events ?? 0}</strong> · distinct phrasings: <strong>${learning.stats?.queries ?? 0}</strong> · last reset: <strong>${esc(learning.stats?.learningResetAt || 'never')}</strong></p>
+        ${(learning.learnedQueries || []).length ? `<table class="breakdown-table"><thead><tr><th>phrasing</th><th>events</th><th>thoughts</th><th>last signal</th></tr></thead><tbody>${learning.learnedQueries.map(row => `<tr><td><code>${esc(row.queryNorm)}</code></td><td class="num">${row.events}</td><td class="num">${row.thoughts}</td><td class="num">${esc(date(row.lastAt, true))}</td></tr>`).join('')}</tbody></table>` : '<p class="micro">Nothing learned yet.</p>'}
+        <div class="data-actions"><button class="button danger" data-action="reset-learning">Reset all query memory</button></div>
+      </section>`;
+  }
+
+  /* ==================== v0.2 · CONNECTION EXPLORER V2 ====================
+     Additive panels below the v0.1 graph.  The v0.1 SVG view and the saved
+     connection list are unchanged; these add path discovery, a direction-aware
+     neighbourhood inspector, and the derived/canonical boundary in plain words.
+     ====================================================================== */
+
+  function thoughtOptions(thoughts, selected) {
+    return ['<option value="">— choose a thought —</option>']
+      .concat(thoughts.map(t => `<option value="${attr(t.id)}" ${selected === t.id ? 'selected' : ''}>${esc(titleOf(t))}</option>`))
+      .join('');
+  }
+
+  function connectionExplorerPanels(thoughts) {
+    const graph = state.graph;
+    return `<section class="panel explorer-panel">
+        <div class="section-head" style="margin-top:0"><h2>Trace a path</h2><span class="section-meta">STORED RELATIONSHIPS ONLY</span></div>
+        <p class="micro">IWTT walks relationships you actually saved. It will not invent an edge to close a gap, and it will tell you when no path exists.</p>
+        <form id="path-form" class="path-form">
+          <label>From <select id="path-source">${thoughtOptions(thoughts, graph.sourceId)}</select></label>
+          <label>To <select id="path-target">${thoughtOptions(thoughts, graph.targetId)}</select></label>
+          <span class="checkbox-control"><input type="checkbox" id="path-undirected"><label for="path-undirected">Ignore stored direction</label></span>
+          <button class="button small" type="submit">Find path</button>
+        </form>
+        <div id="path-result">${graph.path ? renderPathResult(graph.path) : ''}</div>
+      </section>
+      <section class="panel explorer-panel">
+        <div class="section-head" style="margin-top:0"><h2>Neighbourhood</h2><span class="section-meta">BOUNDED · DIRECTION-AWARE</span></div>
+        <p class="micro">One thought, its immediate connections, the direction and wording of each edge, and whether a neighbour is a hub. Nothing here loads the whole graph.</p>
+        <div class="path-form">
+          <label>Thought <select id="neighbourhood-root">${thoughtOptions(thoughts, graph.rootId)}</select></label>
+          <label>Depth <select id="neighbourhood-depth">${[1, 2].map(value => `<option value="${value}" ${graph.depth === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
+          <button class="button small" data-action="load-neighbourhood">Inspect</button>
+        </div>
+        <div id="neighbourhood-result">${graph.neighbourhood ? renderNeighbourhood(graph.neighbourhood) : ''}</div>
+      </section>
+      <section class="panel explorer-panel">
+        <div class="section-head" style="margin-top:0"><h2>What is canonical here</h2><span class="section-meta">THE BOUNDARY</span></div>
+        <ul class="honesty-list">
+          <li><strong>Canonical</strong>: the thoughts, their original text, and every relationship you saved — including whether it was user-confirmed or AI-suggested, and when you confirmed it.</li>
+          <li><strong>Derived</strong>: degrees, hub factors, clusters, path search order and every score. Recomputed from canonical data on demand; deleting them loses nothing.</li>
+          <li><strong>Never</strong>: an AI-suggested connection does not become confirmed because you searched with it, opened it, or marked it useful. Only the Confirm button does that, and confirming keeps the AI_SUGGESTED origin on record.</li>
+          <li><strong>Layout</strong>: node positions are computed in your browser and thrown away. No coordinate is stored, and none is used to infer meaning.</li>
+        </ul>
+      </section>`;
+  }
+
+  function renderPathResult(path) {
+    if (!path.found) {
+      return `<div class="recall-banner none"><strong>No path found</strong><p>${esc(path.reason || 'IWTT could not connect those two thoughts through saved relationships.')}</p>
+        <p class="micro">Searched ${path.visited ?? 0} nodes within ${path.bounds?.maxDepth ?? 6} hops, following stored directions: ${path.directed ? 'yes' : 'no'}.</p></div>`;
+    }
+    const steps = (path.edges || []).map((edge, index) => {
+      const from = (path.nodes || [])[index] || {};
+      const to = (path.nodes || [])[index + 1] || {};
+      return `<li class="path-step">
+          <button class="connection-target" data-open-thought="${attr(from.id)}">${esc(from.displayTitle || from.id || '')}</button>
+          <span class="path-edge ${edge.provenance === 'USER_CONFIRMED' ? 'confirmed' : 'suggested'}" title="${attr(edge.display || '')}">
+            ${edge.direction === 'OUT' ? '—' : '←'} ${esc(edge.label || edge.type)} ${edge.direction === 'OUT' ? '→' : '—'}
+          </span>
+          <button class="connection-target" data-open-thought="${attr(to.id)}">${esc(to.displayTitle || to.id || '')}</button>
+          <span class="micro">${esc(edge.display || '')}${edge.symmetric ? ' · symmetric' : ' · directional'}</span>
+        </li>`;
+    }).join('');
+    return `<div class="recall-banner strong"><strong>${esc(path.narrative || 'Path found')}</strong>
+        <p class="micro">${path.length} hop${path.length === 1 ? '' : 's'} · ${path.visited ?? 0} nodes examined · direction respected: ${path.directed ? 'yes' : 'no'}</p></div>
+      <ol class="path-list">${steps}</ol>`;
+  }
+
+  function renderNeighbourhood(data) {
+    const levels = (data.levels || []).map((level, index) => `
+      <div class="neighbourhood-level"><h4>Level ${index + 1}</h4><ul class="cluster-members">${level.map(item => `
+        <li><button class="connection-target" data-open-thought="${attr(item.thoughtId)}">${esc(item.displayTitle)}</button>
+        <span class="micro">${esc(item.direction === 'OUT' ? '→' : '←')} ${esc(item.label)} · ${esc(item.display)} · degree ${item.degree}${item.hubFactor < 1 ? ` · hub factor ${item.hubFactor}` : ''}</span></li>`).join('')}</ul></div>`).join('');
+    return `<div class="recall-banner possible"><strong>${esc(data.root?.displayTitle || '')}</strong>
+        <p class="micro">Degree ${data.degree} · hub factor ${data.hubFactor} · bounds ${esc(JSON.stringify(data.bounds || {}))}</p></div>${levels || '<p class="micro">No saved connections.</p>'}`;
+  }
+
+  /* ==================== v0.2 · actions & live input ==================== */
+
+  async function recallFeedback(button) {
+    const feedback = button.dataset.feedback;
+    const thoughtId = button.dataset.id;
+    const rank = Number(button.dataset.rank || 0) || null;
+    await api('/api/recall/feedback', {
+      method: 'POST',
+      body: { query: state.recall.query, thoughtId, feedback, rank },
+    });
+    toast(feedback === 'USEFUL'
+      ? 'Recorded as useful. This is derived, decaying memory — it never edits the thought.'
+      : 'Recorded as not useful. Reset it any time from Clusters → query memory.');
+  }
+
+  async function loadBreakdown(button) {
+    const thoughtId = button.dataset.id;
+    const region = document.getElementById('recall-breakdown');
+    if (state.recall.breakdownFor === thoughtId && state.recall.breakdown) {
+      state.recall.breakdownFor = null;
+      state.recall.breakdown = null;
+      if (region) region.innerHTML = '';
+      return;
+    }
+    state.recall.breakdownFor = thoughtId;
+    state.recall.breakdown = null;
+    if (region) region.innerHTML = '<div class="loading-state"><span class="loader"></span><p>Computing the breakdown…</p></div>';
+    try {
+      const { data } = await api(`/api/recall/diagnostics?q=${encodeURIComponent(state.recall.query)}&thought_id=${encodeURIComponent(thoughtId)}`);
+      state.recall.breakdown = data;
+      if (region) region.innerHTML = recallBreakdownPanel();
+    } catch (error) {
+      if (region) region.innerHTML = `<div class="empty-state"><div class="empty-icon">!</div><h3>Breakdown unavailable</h3><p>${esc(error.message)}</p></div>`;
+    }
+  }
+
+  async function findGraphPath() {
+    const source = document.getElementById('path-source')?.value || '';
+    const target = document.getElementById('path-target')?.value || '';
+    if (!source || !target) return toast('Choose both thoughts first.', 'error');
+    if (source === target) return toast('A thought is trivially connected to itself.', 'error');
+    const undirected = document.getElementById('path-undirected')?.checked ? 'true' : 'false';
+    state.graph.sourceId = source;
+    state.graph.targetId = target;
+    const region = document.getElementById('path-result');
+    if (region) region.innerHTML = '<div class="loading-state"><span class="loader"></span><p>Walking saved relationships…</p></div>';
+    try {
+      const { data } = await api(`/api/graph/path?source=${encodeURIComponent(source)}&target=${encodeURIComponent(target)}&undirected=${undirected}`);
+      state.graph.path = data;
+      if (region) region.innerHTML = renderPathResult(data);
+    } catch (error) {
+      if (region) region.innerHTML = `<p class="micro">${esc(error.message)}</p>`;
+    }
+  }
+
+  async function loadNeighbourhood() {
+    const root = document.getElementById('neighbourhood-root')?.value || '';
+    const depth = Number(document.getElementById('neighbourhood-depth')?.value || 1);
+    if (!root) return toast('Choose a thought first.', 'error');
+    state.graph.rootId = root;
+    state.graph.depth = depth;
+    const region = document.getElementById('neighbourhood-result');
+    if (region) region.innerHTML = '<div class="loading-state"><span class="loader"></span><p>Loading neighbourhood…</p></div>';
+    try {
+      const { data } = await api(`/api/graph/neighbourhood/${encodeURIComponent(root)}?depth=${depth}`);
+      state.graph.neighbourhood = data;
+      if (region) region.innerHTML = renderNeighbourhood(data);
+    } catch (error) {
+      if (region) region.innerHTML = `<p class="micro">${esc(error.message)}</p>`;
+    }
+  }
+
+  function scheduleRecall() {
+    window.clearTimeout(state.recall.timer);
+    state.recall.timer = window.setTimeout(() => {
+      state.recall.query = (document.getElementById('recall-input')?.value || '').trim();
+      runRecall();
+    }, 240);
   }
 
   function eventSummary(event) {
@@ -354,8 +781,8 @@
     const sorted = [...allThoughts].sort((a, b) => (degree.get(b.id) || 0) - (degree.get(a.id) || 0) || b.updatedAt.localeCompare(a.updatedAt));
     const visible = sorted.slice(0, 16);
     const hiddenCount = Math.max(0, allThoughts.length - visible.length);
-    return `<section class="view-heading"><div><span class="eyebrow">A SMALL VIEW · CANONICAL LINKS ONLY</span><h1>Connections between thoughts.</h1><p>Every line comes from a saved relationship. Layout is temporary and calculated in your browser; it is not part of your thought data.</p></div><div class="heading-actions"><button class="button" data-view="vault">Browse vault</button></div></section>
-      ${allThoughts.length ? `<section class="panel graph-panel"><div class="graph-canvas">${renderGraph(visible, allRelationships)}</div><div class="graph-legend"><span><i class="legend-dot"></i> Thought / Experiment</span><span><i class="legend-dot proj"></i> Invention / Project</span><span><i class="legend-line"></i> Confirmed by you</span><span><i class="legend-line dashed"></i> Unconfirmed suggestion</span><span>Click a node to inspect</span></div>${hiddenCount ? `<p class="revision-note" style="padding:0 5px">Showing the 16 most-connected/recent thoughts of ${allThoughts.length}. The graph is a browsing aid, not a complete Mind World.</p>` : ''}</section>
+    return `<section class="view-heading"><div><span class="eyebrow">CONNECTION EXPLORER V2 · CANONICAL LINKS ONLY</span><h1>Connections between thoughts.</h1><p>Every line comes from a relationship you saved. Trace a path, inspect one thought's neighbourhood, and see which parts are canonical and which are derived. Layout is temporary and calculated in your browser; it is not part of your thought data.</p></div><div class="heading-actions"><button class="button" data-view="clusters">Derived clusters</button><button class="button" data-view="vault">Browse vault</button></div></section>
+      ${allThoughts.length ? connectionExplorerPanels(allThoughts) + `<section class="panel graph-panel"><div class="graph-canvas">${renderGraph(visible, allRelationships)}</div><div class="graph-legend"><span><i class="legend-dot"></i> Thought / Experiment</span><span><i class="legend-dot proj"></i> Invention / Project</span><span><i class="legend-line"></i> Confirmed by you</span><span><i class="legend-line dashed"></i> Unconfirmed suggestion</span><span>Click a node to inspect</span></div>${hiddenCount ? `<p class="revision-note" style="padding:0 5px">Showing the 16 most-connected/recent thoughts of ${allThoughts.length}. The graph is a browsing aid, not a complete Mind World.</p>` : ''}</section>
       <div class="section-head"><h2>Saved connections</h2><span class="section-meta">${allRelationships.length} active · ${allRelationships.filter(r => r.status === 'SUGGESTED').length} unconfirmed</span></div>
       ${allRelationships.length ? `<div class="list-stack">${allRelationships.map(r => `<article class="list-thought" style="cursor:default"><div><div class="list-meta"><span class="match-pill">${esc(r.type.replaceAll('_', ' '))}</span><span class="provenance-pill ${r.status === 'SUGGESTED' ? 'suggested' : 'confirmed'}">${r.status === 'SUGGESTED' ? 'Unconfirmed AI suggestion' : r.provenance === 'AI_SUGGESTED' ? 'Confirmed AI suggestion' : 'User-confirmed'}</span></div><h3><button class="connection-target" data-open-thought="${attr(r.sourceId)}">${esc(r.source?.title || 'Thought')}</button> <span style="color:#9aa197">↔</span> <button class="connection-target" data-open-thought="${attr(r.targetId)}">${esc(r.target?.title || 'Thought')}</button></h3><p>${esc(r.metadata?.note || 'A saved relationship between two canonical thoughts.')}</p></div><div class="list-right">${r.status === 'SUGGESTED' ? `<button class="button small" data-action="confirm-relationship" data-id="${attr(r.id)}">Confirm</button>` : `<span class="thought-date">${esc(date(r.createdAt))}</span>`}</div></article>`).join('')}</div>` : '<div class="empty-state"><div class="empty-icon">⌘</div><h3>No connections saved yet</h3><p>Open a thought to link it to another. AI suggestions, if added, stay proposals until you confirm them.</p></div>'}` : emptyState('Your graph begins with two thoughts', 'Capture a couple of ideas, then connect them from a thought’s detail view.', 'Capture a thought', 'capture')}`;
   }
@@ -400,6 +827,26 @@
     if (action === 'reload') return render();
     if (action === 'back-to-parent') return navigate(state.parentView, { preserveQuery: state.parentView === 'search' });
     if (action === 'clear-search') { state.query = ''; return render(); }
+    // ---- v0.2 actions ----
+    if (action === 'clear-recall') {
+      state.recall.query = ''; state.recall.outcome = null;
+      state.recall.breakdown = null; state.recall.breakdownFor = null;
+      return render();
+    }
+    if (action === 'recall-feedback') return recallFeedback(button);
+    if (action === 'recall-breakdown') return loadBreakdown(button);
+    if (action === 'load-neighbourhood') return loadNeighbourhood();
+    if (action === 'rebuild-clusters') {
+      await api('/api/recall/index/rebuild', { method: 'POST', body: { full: true, rebuildClusters: true } });
+      toast('Derived indexes and clusters recomputed from canonical data.');
+      return render();
+    }
+    if (action === 'reset-learning') {
+      if (!window.confirm('Delete every derived query-outcome signal? Your thoughts, connections and history are untouched.')) return;
+      await api('/api/recall/learning', { method: 'DELETE' });
+      toast('Query memory reset. Recall keeps working; it simply forgets past feedback.');
+      return render();
+    }
     if (action === 'vault-type') { state.vaultType = button.dataset.type; return render(); }
     if (action === 'toggle-search-graveyard') { state.includeGraveyard = !state.includeGraveyard; return render(); }
     if (action === 'graveyard') {
@@ -489,6 +936,7 @@
       event.preventDefault();
       const view = nav.dataset.view;
       if (view === 'search') state.query = '';
+      if (view === 'recall') state.recall.breakdown = null;
       await navigate(view);
       return;
     }
@@ -518,12 +966,22 @@
     const form = event.target;
     if (form.id === 'global-search-form') {
       event.preventDefault();
-      state.query = document.getElementById('global-search-input').value.trim();
-      state.includeGraveyard = true;
-      state.view = 'search';
+      // v0.2: ⌘K opens FIND MY THOUGHT (Recall V2).  The v0.1 lexical search view
+      // is unchanged and still reachable from the sidebar as "Classic search".
+      state.recall.query = document.getElementById('global-search-input').value.trim();
+      state.view = 'recall';
       state.thoughtId = null;
       setTopbar();
       return render();
+    }
+    if (form.id === 'recall-form') {
+      event.preventDefault();
+      state.recall.query = (document.getElementById('recall-input')?.value || '').trim();
+      return runRecall();
+    }
+    if (form.id === 'path-form') {
+      event.preventDefault();
+      return findGraphPath();
     }
     if (form.id === 'capture-form') {
       event.preventDefault();
@@ -588,12 +1046,20 @@
       clearTimeout(state.searchTimer);
       state.searchTimer = window.setTimeout(refreshSearch, 160);
     }
+    if (event.target.id === 'recall-input') scheduleRecall();
   });
 
   document.addEventListener('change', async event => {
     if (event.target.id === 'include-graveyard') {
       state.includeGraveyard = event.target.checked;
       return refreshSearch();
+    }
+    // ---- v0.2 Find My Thought filters ----
+    if (event.target.id === 'recall-time') { state.recall.time = event.target.value; return runRecall(); }
+    if (event.target.id === 'recall-type') { state.recall.type = event.target.value; return runRecall(); }
+    if (event.target.id === 'recall-graveyard') {
+      state.recall.includeGraveyard = event.target.checked;
+      return runRecall();
     }
     if (event.target.id === 'vault-import-file' && event.target.files?.length) {
       const file = event.target.files[0];

@@ -29,18 +29,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
+from functools import lru_cache
 from typing import Any, Sequence
 
-from ..store import Vault, _display_title, normalize_text, tokenize
+from ..store import Vault, _display_title, tokenize
 from .config import DEFAULT_CONFIG, RecallConfig
 from .results import Explanation, MatchState, OutcomeState, RecallResult, SignalScores
 from .text import (
     best_window,
+    cached_normalize,
     fuzzy_ratio,
     recall_snippet,
+    recall_variants,
     sanitize_label,
     signature_of,
-    token_variants,
     word_trigrams,
 )
 
@@ -69,6 +71,54 @@ TIER_VALUES = {
 }
 
 #: Bounds on the expensive fuzzy pass.
+# --------------------------------------------------------------------------
+# memoization of the pure per-candidate computations
+# --------------------------------------------------------------------------
+# A ``Candidate`` is rebuilt for every query, so its per-instance memo only helps
+# within one query.  The functions below are pure — the same text always tokenizes
+# the same way, the same token set always buckets the same way, and the same
+# (term, token set) always lands in the same tier — so they are memoized for the
+# whole process instead.  Every key is the exact input that produced the value, so
+# a cache hit is indistinguishable from a miss: ranking cannot depend on what
+# happened to be cached, and edited text simply presents a different key.
+#
+# This is what keeps recall interactive when the candidate set is large.  Measured
+# at 1,000 thoughts: ~420 candidates per query, ~415,000 tier evaluations per 40
+# queries, and (before these caches) ~590,000 re-normalizations of the same
+# document text.  All caches are bounded LRU, so a long-running server cannot grow
+# without limit.
+TOKEN_FORMS_CACHE_SIZE = 8_192
+VARIANT_FORMS_CACHE_SIZE = 8_192
+LENGTH_BUCKETS_CACHE_SIZE = 8_192
+TERM_TIER_CACHE_SIZE = 262_144
+
+
+@lru_cache(maxsize=TOKEN_FORMS_CACHE_SIZE)
+def token_forms(source: str) -> frozenset[str]:
+    """Token forms of one field's text.  Read-only; callers must not mutate it."""
+    return frozenset(tokenize(source, remove_stopwords=False))
+
+
+@lru_cache(maxsize=VARIANT_FORMS_CACHE_SIZE)
+def variant_forms(tokens: frozenset[str]) -> frozenset[str]:
+    forms: set[str] = set()
+    for token in tokens:
+        forms |= recall_variants(token)
+    return frozenset(forms)
+
+
+@lru_cache(maxsize=LENGTH_BUCKETS_CACHE_SIZE)
+def length_buckets(tokens: frozenset[str]) -> dict[int, tuple[str, ...]]:
+    """Tokens grouped by length, for the bounded fuzzy/typo comparisons.
+
+    Returned dict is shared and must be treated as read-only (callers only ``get``).
+    """
+    buckets: dict[int, list[str]] = {}
+    for token in sorted(tokens):
+        buckets.setdefault(len(token), []).append(token)
+    return {length: tuple(sorted(group)) for length, group in buckets.items()}
+
+
 MAX_FUZZY_TOKEN_COMPARISONS = 32
 FUZZY_LENGTH_TOLERANCE = 2
 
@@ -123,27 +173,24 @@ class Candidate:
     def token_set(self, field_name: str) -> frozenset[str]:
         cached = self._tokens.get(field_name)
         if cached is None:
-            source = {
-                "title": self.title,
-                "body": f"{self.original_text}\n{self.current_text}",
-                "tag": " ".join(self.tags),
-                "all": f"{self.title}\n{self.original_text}\n{self.current_text}\n{' '.join(self.tags)}",
-            }[field_name]
-            forms: set[str] = set()
-            for token in tokenize(source, remove_stopwords=False):
-                forms.add(token)
-            cached = frozenset(forms)
+            cached = token_forms(self.field_source(field_name))
             self._tokens[field_name] = cached
         return cached
+
+    def field_source(self, field_name: str) -> str:
+        """The exact text a field's tokens are drawn from."""
+        return {
+            "title": self.title,
+            "body": f"{self.original_text}\n{self.current_text}",
+            "tag": " ".join(self.tags),
+            "all": f"{self.title}\n{self.original_text}\n{self.current_text}\n{' '.join(self.tags)}",
+        }[field_name]
 
     def variant_set(self, field_name: str) -> frozenset[str]:
         key = f"{field_name}:variants"
         cached = self._tokens.get(key)
         if cached is None:
-            forms: set[str] = set()
-            for token in self.token_set(field_name):
-                forms |= token_variants(token)
-            cached = frozenset(forms)
+            cached = variant_forms(self.token_set(field_name))
             self._tokens[key] = cached
         return cached
 
@@ -151,10 +198,7 @@ class Candidate:
         key = f"{field_name}:bylen"
         cached = self._tokens.get(key)
         if cached is None:
-            buckets: dict[int, list[str]] = {}
-            for token in sorted(self.token_set(field_name)):
-                buckets.setdefault(len(token), []).append(token)
-            cached = {length: tuple(sorted(tokens)) for length, tokens in buckets.items()}
+            cached = length_buckets(self.token_set(field_name))
             self._tokens[key] = cached
         return cached
 
@@ -162,7 +206,7 @@ class Candidate:
     def original_norm(self) -> str:
         cached = self._tokens.get("original_norm")
         if cached is None:
-            cached = normalize_text(self.original_text)
+            cached = cached_normalize(self.original_text)
             self._tokens["original_norm"] = cached
         return cached
 
@@ -170,7 +214,7 @@ class Candidate:
     def current_norm(self) -> str:
         cached = self._tokens.get("current_norm")
         if cached is None:
-            cached = normalize_text(self.current_text)
+            cached = cached_normalize(self.current_text)
             self._tokens["current_norm"] = cached
         return cached
 
@@ -178,7 +222,7 @@ class Candidate:
     def title_norm(self) -> str:
         cached = self._tokens.get("title_norm")
         if cached is None:
-            cached = normalize_text(self.title)
+            cached = cached_normalize(self.title)
             self._tokens["title_norm"] = cached
         return cached
 
@@ -244,37 +288,61 @@ def term_tier(
     set-based tiers are tried first, and the ``difflib`` tier is only attempted
     when ``allow_fuzzy`` is true (the engine sets that only for the bounded
     fuzzy-pass candidate set).
+
+    The work is done by ``_term_tier_cached``, which is a pure function of the
+    term, the field's token set and the tier constants.  Caching it means a
+    repeated query — the normal case when somebody is hunting for a memory they
+    have already tried to recall — costs a dictionary lookup per (term, document)
+    pair instead of a fresh tier search.
     """
-    tokens = candidate.token_set(field_name)
+    return _term_tier_cached(
+        term,
+        candidate.token_set(field_name),
+        field_name,
+        allow_fuzzy,
+        config.tier_min_token_length,
+        config.fuzzy_token_threshold,
+    )
+
+
+@lru_cache(maxsize=TERM_TIER_CACHE_SIZE)
+def _term_tier_cached(
+    term: str,
+    tokens: frozenset[str],
+    field_name: str,
+    allow_fuzzy: bool,
+    min_token_length: int,
+    fuzzy_token_threshold: float,
+) -> tuple[str, float, str]:
     if not tokens or not term:
         return TIER_NONE, 0.0, ""
 
     if term in tokens:
         return TIER_EXACT, TIER_VALUES[TIER_EXACT], term
 
-    variants = token_variants(term)
+    variants = recall_variants(term)
     variant_hit = sorted((variants - {term}) & tokens)
     if variant_hit:
         return TIER_VARIANT, TIER_VALUES[TIER_VARIANT], variant_hit[0]
 
     variants_sorted = sorted(variants)
-    if len(term) >= config.tier_min_token_length:
-        prefixes = sorted(
+    if len(term) >= min_token_length:
+        prefixes = [
             token
             for token in tokens
-            if len(token) >= config.tier_min_token_length
+            if len(token) >= min_token_length
             and (token.startswith(term) or term.startswith(token))
-        )
+        ]
         if prefixes:
-            return TIER_PREFIX, TIER_VALUES[TIER_PREFIX], prefixes[0]
-        substrings = sorted(
+            return TIER_PREFIX, TIER_VALUES[TIER_PREFIX], min(prefixes)
+        substrings = [
             token
             for token in tokens
-            if len(token) >= config.tier_min_token_length
+            if len(token) >= min_token_length
             and (term in token or token in term)
-        )
+        ]
         if substrings:
-            return TIER_SUBSTRING, TIER_VALUES[TIER_SUBSTRING], substrings[0]
+            return TIER_SUBSTRING, TIER_VALUES[TIER_SUBSTRING], min(substrings)
 
     # Typo tier: character-trigram overlap with a single document token.  Cheap,
     # bounded, and it is what makes "adaptng enemies" find "adapting enemies".
@@ -282,10 +350,10 @@ def term_tier(
         query_grams = word_trigrams(term)
         best_form = ""
         best_similarity = 0.0
-        buckets = candidate.tokens_by_length(field_name)
+        buckets = length_buckets(tokens)
         compared = 0
         for length in range(
-            max(config.tier_min_token_length, len(term) - FUZZY_LENGTH_TOLERANCE),
+            max(min_token_length, len(term) - FUZZY_LENGTH_TOLERANCE),
             len(term) + FUZZY_LENGTH_TOLERANCE + 1,
         ):
             for token in buckets.get(length, ()):
@@ -303,16 +371,16 @@ def term_tier(
         if best_similarity >= 0.55 and best_form:
             return TIER_TYPO, TIER_VALUES[TIER_TYPO] * best_similarity, best_form
 
-    if allow_fuzzy and len(term) >= config.tier_min_token_length:
+    if allow_fuzzy and len(term) >= min_token_length:
         best_form = ""
         best_ratio = 0.0
-        buckets = candidate.tokens_by_length(field_name)
+        buckets = length_buckets(tokens)
         compared = 0
         for variant in variants_sorted:
-            if len(variant) < config.tier_min_token_length:
+            if len(variant) < min_token_length:
                 continue
             for length in range(
-                max(config.tier_min_token_length, len(variant) - FUZZY_LENGTH_TOLERANCE),
+                max(min_token_length, len(variant) - FUZZY_LENGTH_TOLERANCE),
                 len(variant) + FUZZY_LENGTH_TOLERANCE + 1,
             ):
                 for token in buckets.get(length, ()):
@@ -327,7 +395,7 @@ def term_tier(
                     break
             if compared > MAX_FUZZY_TOKEN_COMPARISONS:
                 break
-        if best_ratio >= config.fuzzy_token_threshold and best_form:
+        if best_ratio >= fuzzy_token_threshold and best_form:
             return TIER_DIFFLIB, min(best_ratio * 0.84, 0.82), best_form
 
     return TIER_NONE, 0.0, ""
@@ -358,7 +426,7 @@ def exact_phrase_signal(analysis: Any, candidate: Candidate) -> tuple[float, str
             hits.append("title")
             if best < 0.85:
                 best, where = 0.85, "title"
-        tag_norm = normalize_text(" ".join(candidate.tags))
+        tag_norm = cached_normalize(" ".join(candidate.tags))
         if tag_norm and phrase in tag_norm:
             hits.append("tag")
             if best < 0.7:
@@ -445,6 +513,18 @@ def score_candidate(
             fuzzy = 0.0
             fuzzy_window = ""
 
+    # --- the lexical-evidence gate -------------------------------------
+    # Applied AFTER measurement and recorded, never applied silently: the raw
+    # values survive in ``gated_fuzzy`` / ``gated_trigram`` so the diagnostics can
+    # show exactly what was suppressed and why.
+    gated_fuzzy = fuzzy
+    gated_trigram = trigram
+    lexical_evidence = coverage_ratio > 0.0 or phrase_value > 0.0
+    if config.require_lexical_evidence and not lexical_evidence:
+        fuzzy = 0.0
+        fuzzy_window = ""
+        trigram = 0.0
+
     graph_contribution = 0.0
     graph_fields: dict[str, Any] = {}
     if graph_signal:
@@ -481,6 +561,9 @@ def score_candidate(
         coverage_matched=tuple(matched),
         coverage_missing=tuple(missing),
         coverage_ratio=coverage_ratio,
+        lexical_evidence=lexical_evidence,
+        gated_fuzzy=round(gated_fuzzy, 6),
+        gated_trigram=round(gated_trigram, 6),
         trigram=trigram,
         trigram_shared=candidate.trigram_shared,
         trigram_dot=candidate.trigram_dot,
@@ -658,6 +741,22 @@ def build_explanations(
             detail=f"Character-level spelling similarity {signals.trigram:.2f} "
                    f"({signals.trigram_shared} shared trigrams).",
             evidence={"similarity": round(signals.trigram, 4), "shared": signals.trigram_shared},
+        ))
+    if not signals.lexical_evidence and (signals.gated_fuzzy > 0 or signals.gated_trigram > 0):
+        add(Explanation(
+            "NO_LEXICAL_EVIDENCE",
+            contribution=0.0,
+            detail=(
+                f"Not one word of your query appears in this thought. Character similarity "
+                f"({signals.gated_fuzzy:.2f}) and trigram similarity ({signals.gated_trigram:.2f}) "
+                f"were measured but suppressed, because IWTT has no semantic stage and will "
+                f"not present a coincidence as a match."
+            ),
+            evidence={
+                "gatedFuzzy": round(signals.gated_fuzzy, 4),
+                "gatedTrigram": round(signals.gated_trigram, 4),
+                "matchedTerms": [],
+            },
         ))
     if signals.fuzzy > 0:
         add(Explanation(
@@ -881,7 +980,9 @@ def assign_states(
     for result in results:
         if ambiguous and result.thought_id in band_ids:
             result.state = MatchState.AMBIGUOUS
-        elif result.score >= config.strong_min_score:
+        elif result.score >= config.strong_min_score and result.signals.lexical_evidence:
+            #: A strong claim requires the user's own words.  A thought that scored
+            #: high purely by association is reported as possible, never as strong.
             result.state = MatchState.STRONG
         else:
             result.state = MatchState.POSSIBLE
@@ -923,7 +1024,7 @@ def assign_states(
             "orderingIsTieBreakNotJudgement": tie_trigger and not band_trigger,
         }
 
-    if top >= config.strong_min_score:
+    if top >= config.strong_min_score and results[0].signals.lexical_evidence:
         return OutcomeState.STRONG, (
             f"Strong match (score {top:.2f} of a possible {config.theoretical_max_score():.2f}). "
             f"The result below leads to what you actually wrote."

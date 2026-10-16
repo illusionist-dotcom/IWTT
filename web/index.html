@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#20352e">
-  <meta name="description" content="IWTT — a private, local-first vault for original thoughts, ideas, experiments, inventions, and projects.">
+  <meta name="description" content="IWTT — a private, local-first vault for original thoughts, ideas, experiments, inventions, and projects, with deterministic explainable recall.">
   <title>IWTT · Thought Vault</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/app.js" defer></script>
@@ -21,17 +21,19 @@
       <nav class="primary-nav">
         <button class="nav-item active" data-view="capture"><span class="nav-icon icon-spark">✳</span><span>Capture</span><span class="nav-hint">01</span></button>
         <button class="nav-item" data-view="vault"><span class="nav-icon">▤</span><span>Vault</span><span class="nav-count" id="nav-active-count">—</span></button>
-        <button class="nav-item" data-view="search"><span class="nav-icon">⌕</span><span>Search</span><span class="nav-hint">⌘ K</span></button>
+        <button class="nav-item" data-view="recall"><span class="nav-icon">✦</span><span>Find My Thought</span><span class="nav-hint">⌘ K</span></button>
+        <button class="nav-item" data-view="search"><span class="nav-icon">⌕</span><span>Classic search</span></button>
         <button class="nav-item" data-view="timeline"><span class="nav-icon">◷</span><span>Timeline</span></button>
         <button class="nav-item" data-view="graveyard"><span class="nav-icon">♧</span><span>Graveyard</span><span class="nav-count muted" id="nav-grave-count">—</span></button>
         <button class="nav-item" data-view="connections"><span class="nav-icon">⌘</span><span>Connections</span></button>
+        <button class="nav-item" data-view="clusters"><span class="nav-icon">❖</span><span>Clusters</span></button>
       </nav>
       <div class="sidebar-spacer"></div>
       <div class="sidebar-note">
         <span class="local-dot"></span><span><strong>Private by design</strong><small>Stored on this device</small></span>
       </div>
       <button class="nav-item settings-link" data-view="data"><span class="nav-icon">⚙</span><span>Data & privacy</span></button>
-      <div class="sidebar-version">IWTT v0.1 <span>·</span> THOUGHT VAULT</div>
+      <div class="sidebar-version">IWTT v0.2 <span>·</span> RECALL &amp; GRAPH</div>
     </aside>
 
     <main class="main-shell">
@@ -39,7 +41,7 @@
         <div class="topbar-context"><span class="crumb-dot"></span><span id="topbar-label">CAPTURE</span></div>
         <form class="global-search" id="global-search-form" role="search">
           <span class="search-glass" aria-hidden="true">⌕</span>
-          <input id="global-search-input" type="search" placeholder="Find a thought from a fragment…" aria-label="Search your thought vault">
+          <input id="global-search-input" type="search" placeholder="Find my thought from a fragment…" aria-label="Find a thought from a fragment">
           <kbd>↵</kbd>
         </form>
         <div class="topbar-right"><span class="save-status"><i></i> LOCAL VAULT</span><button class="avatar" title="Your local vault">I</button></div>

@@ -75,14 +75,17 @@ class RecallConfig:
     w_lifecycle: float = 0.5
     w_query_memory: float = 1.5
 
-    # --- per-term lexical tiers (compressed re-derivation of Graphify's
-    #     1000/100/1; only the strongest tier per term counts, so one term can
-    #     never double-count) ---
-    tier_exact: float = 1.00
-    tier_variant: float = 0.90      # v0.1 morphology / alias map
-    tier_prefix: float = 0.75
-    tier_substring: float = 0.60
-    tier_fuzzy: float = 0.50        # scaled by the observed similarity
+    # --- per-term lexical tiers -------------------------------------------
+    # Only the strongest tier per term counts, so one term can never
+    # double-count.  The tier VALUES are deliberately not configurable: they live
+    # in ``scoring.TIER_VALUES`` (EXACT 1.00, VARIANT 0.90, PREFIX 0.86,
+    # SUBSTRING 0.70, TYPO 0.55 x trigram similarity, DIFFLIB min(ratio x 0.84,
+    # 0.82)) and are part of the documented scoring contract.  Earlier drafts of
+    # this dataclass carried tier_exact / tier_variant / tier_prefix /
+    # tier_substring / tier_fuzzy fields that no code ever read, and whose numbers
+    # contradicted the values actually used.  A knob that does nothing is worse
+    # than no knob, and a published config that disagrees with the code is worse
+    # still, so they were removed rather than documented.
     tier_min_token_length: int = 4  # prefix/substring/fuzzy need >= 4 chars
     fuzzy_token_threshold: float = 0.70
 
@@ -97,10 +100,31 @@ class RecallConfig:
     #: lexical candidate set is used unfiltered instead.  The index may only
     #: speed things up, never change results.
     trigram_guard_fraction: float = 0.10
+    #: A trigram that occurs in more documents than the cap below cannot tell one
+    #: memory from another, yet reading its full postings list is the single most
+    #: expensive part of candidate generation at scale (717,587 trigram rows at
+    #: 10,000 thoughts).  The effective cap is
+    #: ``max(trigram_postings_floor, trigram_postings_fraction * documents)``.
+    #:
+    #: The floor matters: at 1,000 thoughts the largest postings list a query
+    #: trigram has is well under 1,000, so a small vault keeps every trigram it
+    #: has always kept and its results are unchanged.  A large vault stops paying
+    #: for character fragments that appear everywhere.  Skipped trigrams are named
+    #: in the honesty block, never silently dropped.
+    trigram_postings_floor: int = 1000
+    trigram_postings_fraction: float = 0.02
     #: Number of candidates that receive the expensive difflib fuzzy pass.
     fuzzy_scoring_cap: int = 120
     fuzzy_min_similarity: float = 0.42
     trigram_min_similarity: float = 0.08
+    #: A candidate that shares NO query term with a thought may not qualify on
+    #: character similarity alone.  Fuzzy and trigram signals are enrichers on top
+    #: of lexical evidence, not a substitute for it: without this rule a query like
+    #: "quantum chromodynamics" returns a result because two unrelated strings
+    #: happen to share 43% of their characters in a length-matched window.  IWTT
+    #: has no semantic stage, so where there is no word in common it must refuse
+    #: rather than dress up a coincidence as a match.
+    require_lexical_evidence: bool = True
 
     # --- graph expansion --------------------------------------------------
     graph_seeds_max: int = 6
@@ -137,6 +161,14 @@ class RecallConfig:
     # --- result gating ----------------------------------------------------
     max_results: int = 25
     min_score: float = 0.35
+    #: Graph expansion ENRICHES candidates; it never replaces retrieval.  A thought
+    #: reached only by association — even along an edge the user confirmed by hand —
+    #: carries no lexical evidence of its own, so it is not returned as a match.
+    #: It is reported instead (``honesty["graphReachedBelowThreshold"]``), with its
+    #: title, depth and provenance, so the connection is visible without being
+    #: dressed up as a match.  This flag exists so the policy is a stated decision
+    #: rather than an accident of thresholds.
+    graph_may_surface_without_lexical_evidence: bool = False
 
     # --- match / outcome states ------------------------------------------
     strong_min_score: float = 6.0
@@ -204,7 +236,10 @@ class RecallConfig:
             + self.w_token_overlap
             + self.w_title
             + self.w_tag
-            + self.graph_max_contribution
+            # The graph signal is weight x capped contribution.  With the default
+            # w_graph of 1.0 the cap alone happens to be the right number, but
+            # multiplying keeps the published maximum honest if a weight changes.
+            + self.w_graph * self.graph_max_contribution
             + self.w_temporal
             + self.w_lifecycle
             + self.w_query_memory * self.query_memory_positive_cap,

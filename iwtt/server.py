@@ -1,4 +1,10 @@
-"""Local HTTP application and static-file server for IWTT v0.1."""
+"""Local HTTP application and static-file server for IWTT.
+
+v0.2 adds the Recall & Graph Intelligence routes.  They live in separate
+``_*_api_v02`` dispatchers so the v0.1 route table above them is untouched and
+the diff stays reviewable; ``/api/search`` in particular still calls
+``Vault.search()`` and returns exactly what it returned in v0.1.
+"""
 from __future__ import annotations
 
 import argparse
@@ -24,6 +30,29 @@ def _truthy(value: str | None) -> bool:
     return (value or "").lower() in {"1", "true", "yes", "on"}
 
 
+def _qstr(query: dict[str, list[str]], key: str, default: str = "") -> str:
+    return (query.get(key, [default])[0] or default)
+
+
+def _qint(query: dict[str, list[str]], key: str, default: int) -> int:
+    raw = query.get(key, [None])[0]
+    if raw in (None, ""):
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"{key} must be an integer") from exc
+
+
+def _qlist(query: dict[str, list[str]], key: str) -> list[str] | None:
+    """Comma-separated multi-value parameter; absent means 'no filter'."""
+    raw = query.get(key)
+    if not raw:
+        return None
+    values = [part.strip() for chunk in raw for part in chunk.split(",") if part.strip()]
+    return values or None
+
+
 class IWTTHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
     daemon_threads = True
@@ -36,7 +65,7 @@ class IWTTHTTPServer(ThreadingHTTPServer):
 class RequestHandler(BaseHTTPRequestHandler):
     server: IWTTHTTPServer
     protocol_version = "HTTP/1.1"
-    server_version = "IWTT/0.1"
+    server_version = "IWTT/0.2"
 
     def log_message(self, fmt: str, *args) -> None:
         LOG.info("%s - %s", self.address_string(), fmt % args)
@@ -122,6 +151,17 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "ai": {"available": bool(getattr(provider, "available", False)),
                        "provider": getattr(provider, "name", "NoAIProvider"),
                        "model": getattr(provider, "model", None)},
+                "recall": {
+                    "available": True,
+                    "requiresAI": False,
+                    "requiresNetwork": False,
+                    "embeddingsEnabled": False,
+                    "note": (
+                        "Recall V2 is deterministic lexical + fuzzy + graph retrieval over "
+                        "derived indexes. It is not semantic search and does not claim to "
+                        "understand meaning."
+                    ),
+                },
             })
             return
         if path == "/api/stats":
@@ -176,7 +216,129 @@ class RequestHandler(BaseHTTPRequestHandler):
         if thought_match:
             self._send_json(200, {"thought": self.vault.get_thought(thought_match.group(1))})
             return
+        if self._get_api_v02(path, query):
+            return
         self._send_json(404, {"error": "API route not found"})
+
+    # ------------------------------------------------------------------ v0.2 --
+    # Recall & Graph Intelligence GET routes.  Read-only except where a call
+    # refreshes the derived index, which is always rebuildable.
+    # ------------------------------------------------------------------
+
+    def _recall_kwargs(self, query: dict[str, list[str]]) -> dict:
+        kwargs: dict = {}
+        if _qstr(query, "q") or "q" in query:
+            kwargs["query"] = _qstr(query, "q")
+        limit = _qint(query, "limit", 0)
+        if limit:
+            kwargs["limit"] = limit
+        if "include_graveyard" in query:
+            kwargs["include_graveyard"] = _truthy(_qstr(query, "include_graveyard", "true"))
+        for key, name in (("types", "types"), ("tags", "tags"), ("statuses", "statuses")):
+            values = _qlist(query, key)
+            if values is not None:
+                kwargs[name] = values
+        tag_mode = _qstr(query, "tag_mode")
+        if tag_mode:
+            kwargs["tag_mode"] = tag_mode
+        time_expression = _qstr(query, "time")
+        if time_expression:
+            kwargs["time_expression"] = time_expression
+        time_field = _qstr(query, "time_field")
+        if time_field:
+            kwargs["time_field"] = time_field
+        if "include_demo" in query:
+            kwargs["include_demo"] = _truthy(_qstr(query, "include_demo", "true"))
+        return kwargs
+
+    def _get_api_v02(self, path: str, query: dict[str, list[str]]) -> bool:
+        vault = self.vault
+        if path == "/api/recall":
+            raw_query = _qstr(query, "q")
+            if not raw_query.strip():
+                raise ValidationError("q is required")
+            kwargs = self._recall_kwargs(query)
+            kwargs.pop("query", None)
+            outcome = vault.recall(raw_query, **kwargs)
+            self._send_json(
+                200, outcome.to_dict(include_diagnostics=_truthy(_qstr(query, "diagnostics")))
+            )
+            return True
+        if path == "/api/recall/find":
+            kwargs = self._recall_kwargs(query)
+            kwargs.pop("query", None)
+            self._send_json(200, vault.find_my_thought(_qstr(query, "q"), **kwargs))
+            return True
+        if path == "/api/recall/config":
+            self._send_json(200, vault.recall_config())
+            return True
+        if path == "/api/recall/index":
+            self._send_json(200, vault.recall_index_stats())
+            return True
+        if path == "/api/recall/diagnostics":
+            self._send_json(200, vault.recall_diagnostics(
+                _qstr(query, "q"), _qstr(query, "thought_id") or None
+            ))
+            return True
+        if path == "/api/recall/learning":
+            self._send_json(200, {
+                "stats": vault.recall_learning_stats(),
+                "learnedQueries": vault.learned_queries(_qint(query, "limit", 100)),
+                "boundary": (
+                    "Query-outcome memory is DERIVED. It never touches a canonical table, "
+                    "it decays over time, it can be reset at any moment, and recording "
+                    "feedback never confirms an AI-suggested relationship."
+                ),
+            })
+            return True
+        if path == "/api/recall/learning/history":
+            self._send_json(200, {"history": vault.recall_learning_history(_qint(query, "limit", 200))})
+            return True
+        if path == "/api/clusters":
+            self._send_json(200, {
+                "clusters": vault.clusters(),
+                "authority": "AUTOMATICALLY_DISCOVERED_CLUSTER",
+                "canonical": False,
+                "note": (
+                    "Clusters are a derived reading of the graph, recomputed from canonical "
+                    "relationships. They are never stored as canonical truth and never rename "
+                    "or regroup a thought's own meaning."
+                ),
+            })
+            return True
+        if path == "/api/graph/view":
+            self._send_json(200, vault.graph_view_model(
+                root_ids=_qlist(query, "root") or _qlist(query, "root_ids"),
+                max_nodes=_qint(query, "max_nodes", 200),
+                include_graveyard=_truthy(_qstr(query, "include_graveyard", "true")),
+                include_suggested=_truthy(_qstr(query, "include_suggested", "true")),
+            ))
+            return True
+        if path == "/api/graph/path":
+            source = _qstr(query, "source")
+            target = _qstr(query, "target")
+            if not source or not target:
+                raise ValidationError("source and target are required")
+            self._send_json(200, vault.find_path(
+                source, target, directed=not _truthy(_qstr(query, "undirected"))
+            ))
+            return True
+        if path == "/api/external/foundation":
+            self._send_json(200, vault.external_foundation())
+            return True
+        neighbourhood_match = re.fullmatch(r"/api/graph/neighbourhood/([^/]+)", path)
+        if neighbourhood_match:
+            self._send_json(200, vault.thought_neighbourhood(
+                neighbourhood_match.group(1), depth=_qint(query, "depth", 1)
+            ))
+            return True
+        lineage_match = re.fullmatch(r"/api/graph/lineage/([^/]+)", path)
+        if lineage_match:
+            self._send_json(200, vault.thought_lineage(
+                lineage_match.group(1), max_depth=_qint(query, "max_depth", 3)
+            ))
+            return True
+        return False
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
@@ -257,7 +419,79 @@ class RequestHandler(BaseHTTPRequestHandler):
         if relationship_match:
             self._send_json(200, {"relationship": self.vault.confirm_relationship(relationship_match.group(1))})
             return
+        if self._post_api_v02(path, payload):
+            return
         self._send_json(404, {"error": "API route not found"})
+
+    # ------------------------------------------------------------------ v0.2 --
+    # Recall POST routes.  These write DERIVED rows only.  None of them can
+    # confirm a relationship, edit a thought, or touch canonical history — the
+    # one confirmation route remains v0.1's /api/relationships/<id>/confirm.
+    # ------------------------------------------------------------------
+
+    def _post_api_v02(self, path: str, payload) -> bool:
+        vault = self.vault
+        if path == "/api/recall":
+            if not isinstance(payload, dict):
+                raise ValidationError("Request body must be an object")
+            raw_query = str(payload.get("query") or payload.get("q") or "")
+            if not raw_query.strip():
+                raise ValidationError("query is required")
+            outcome = vault.recall(
+                raw_query,
+                limit=payload.get("limit"),
+                include_graveyard=payload.get("includeGraveyard"),
+                types=payload.get("types"),
+                tags=payload.get("tags"),
+                statuses=payload.get("statuses"),
+                tag_mode=payload.get("tagMode"),
+                time_expression=payload.get("time") or payload.get("timeExpression"),
+                time_field=payload.get("timeField"),
+                include_demo=payload.get("includeDemo"),
+                explain=bool(payload.get("explain", True)),
+                record_opened=bool(payload.get("recordOpened", False)),
+            )
+            self._send_json(200, outcome.to_dict())
+            return True
+        if path == "/api/recall/find":
+            if not isinstance(payload, dict):
+                raise ValidationError("Request body must be an object")
+            raw_query = str(payload.get("query") or payload.get("q") or "")
+            self._send_json(200, vault.find_my_thought(
+                raw_query,
+                limit=payload.get("limit"),
+                include_graveyard=payload.get("includeGraveyard"),
+                record_opened=bool(payload.get("recordOpened", False)),
+            ))
+            return True
+        if path == "/api/recall/feedback":
+            if not isinstance(payload, dict):
+                raise ValidationError("Request body must be an object")
+            record = vault.record_recall_feedback(
+                query=str(payload.get("query") or ""),
+                thought_id=str(payload.get("thoughtId") or ""),
+                feedback=str(payload.get("feedback") or ""),
+                rank=payload.get("rank"),
+                score=payload.get("score"),
+                note=str(payload.get("note") or ""),
+            )
+            self._send_json(201, {
+                "feedback": record,
+                "canonical": False,
+                "note": (
+                    "Stored in the derived recall_query_memory table only. Reset it at any "
+                    "time with DELETE /api/recall/learning; it decays on a 180-day half-life."
+                ),
+            })
+            return True
+        if path == "/api/recall/index/rebuild":
+            body = payload if isinstance(payload, dict) else {}
+            self._send_json(200, vault.rebuild_recall_indexes(
+                full=bool(body.get("full", True)),
+                rebuild_clusters=bool(body.get("rebuildClusters", True)),
+            ))
+            return True
+        return False
 
     def do_PATCH(self) -> None:
         path = unquote(urlparse(self.path).path)
@@ -297,6 +531,15 @@ class RequestHandler(BaseHTTPRequestHandler):
                 thought = self.vault.remove_tag(tag_match.group(1), tag_match.group(2))
                 self._send_json(200, {"thought": thought})
                 return
+            if path == "/api/recall/learning":
+                result = self.vault.reset_recall_learning()
+                result["note"] = (
+                    "Every derived query-outcome signal has been deleted. Nothing canonical "
+                    "was touched, and recall keeps working — it simply stops being influenced "
+                    "by past feedback until you give some again."
+                )
+                self._send_json(200, result)
+                return
             self._send_json(404, {"error": "API route not found"})
         except Exception as exc:
             self._error(exc)
@@ -321,7 +564,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the local IWTT v0.1 Thought Vault")
+    parser = argparse.ArgumentParser(description="Run the local IWTT v0.2 Thought Vault")
     parser.add_argument("--host", default="127.0.0.1", help="Bind address (default: loopback only)")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--data-dir", default=os.environ.get("IWTT_DATA_DIR", str(Path.home() / ".iwtt")))

@@ -25,7 +25,7 @@ from typing import Any
 
 from ..store import STOPWORDS, THOUGHT_TYPES, normalize_text, tokenize
 from .filters import TimeWindow, detect_time_hint
-from .text import strip_memory_filler, token_variants
+from .text import recall_variants, strip_memory_filler
 
 #: Words that hint at a lifecycle type inside a natural-language query.
 TYPE_HINTS: dict[str, tuple[str, ...]] = {
@@ -122,7 +122,7 @@ def _build_terms(text: str) -> tuple[QueryTerm, ...]:
             continue
         seen[token] = QueryTerm(
             term=token,
-            variants=frozenset(token_variants(token)),
+            variants=frozenset(recall_variants(token)),
             is_stopword=token in STOPWORDS,
         )
     return tuple(seen.values())

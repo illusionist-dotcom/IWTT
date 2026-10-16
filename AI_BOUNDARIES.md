@@ -1,4 +1,4 @@
-# IWTT v0.1 AI Boundaries
+# IWTT v0.2 AI Boundaries
 
 ## Default: no AI
 
@@ -27,6 +27,19 @@ Relationship origin and confirmation are separate:
 - A user-created link begins `USER_CONFIRMED` / `CONFIRMED`.
 
 The UI marks proposals and requires an explicit Confirm action. It never silently promotes an AI proposal to confirmed knowledge.
+
+## Recall never uses AI
+
+v0.2 adds a substantial retrieval layer, and none of it is AI:
+
+- `embeddings_enabled`, `semantic_stage_enabled`, `ai_required` and `network_required` are all **`False`** in `RecallConfig`, and there is no code path that could set them from the environment.
+- Matching is tokens, morphology and aliases, character trigrams, bounded `difflib` similarity, and stored relationships. Nothing is embedded, nothing is sent anywhere, and no model is loaded.
+- Every recall outcome carries an `honesty` block stating this in plain language — `embeddings`: *"NOT IMPLEMENTED. IWTT v0.2 contains no embedding model, no vector index and no semantic stage. Retrieval is lexical + fuzzy + graph, and says so."*; `ai`: *"Not used. Recall ran entirely offline against derived indexes."*; `network`: *"None. No request left this process."*; `probabilisticConfidence`: *"Scores are deterministic weighted sums, not probabilities."*
+- Derived query-outcome memory is arithmetic over four signed constants with a documented half-life — not training, not a model, and erasable in one call.
+- Clusters are labelled `AUTOMATICALLY_DISCOVERED_CLUSTER`. No generated title, summary or grouping is ever presented as something the user wrote.
+- Fuzzy recall is **not** solved by calling an LLM, and no "semantic AI" language is used anywhere in the product or the docs.
+
+`scripts/verify_release_v02.py` asserts the default provider is `NoAIProvider`, that all four flags are false, and that `iwtt/` imports nothing outside the standard library.
 
 ## Not in v0.1
 

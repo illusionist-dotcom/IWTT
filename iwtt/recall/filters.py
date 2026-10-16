@@ -81,6 +81,12 @@ class TimeWindow:
     label: str
     expression: str = ""
     source: str = "explicit"     # 'explicit' (a filter) | 'query-hint' (detected)
+    #: How much precision the window claims.  A filter the user set is EXPLICIT.
+    #: A phrase like "last spring" read out of the query is an ESTIMATED_RANGE:
+    #: it is a real range the user remembers, but IWTT must never present it as
+    #: an exact timestamp it does not have.  Surfaced in the UI and in the
+    #: diagnostics so nobody mistakes an estimate for a measurement.
+    precision: str = "EXPLICIT"  # EXPLICIT | ESTIMATED_RANGE
 
     def contains(self, value: Any) -> bool:
         moment = parse_timestamp(value) if isinstance(value, str) else value
@@ -109,6 +115,14 @@ class TimeWindow:
             "label": self.label,
             "expression": self.expression,
             "source": self.source,
+            "precision": self.precision,
+            "estimated": self.precision == "ESTIMATED_RANGE",
+            "note": (
+                "A range read from your wording, not a timestamp IWTT knows. "
+                "Thoughts anywhere inside it can match."
+                if self.precision == "ESTIMATED_RANGE"
+                else "An explicit window you set as a filter."
+            ),
         }
 
 
@@ -252,8 +266,14 @@ def parse_time_expression(expression: str, *, now: datetime | None = None) -> Ti
     """Parse an explicit time filter expression.
 
     Supported: named windows; ``before X``; ``after X`` / ``since X``;
-    ``between X and Y`` / ``from X to Y``; ``in YEAR``; a bare date; and
-    ``N day(s)|week(s)|month(s)|year(s) ago``.
+    ``between X and Y`` / ``from X to Y``; ``in YEAR``; a bare date;
+    ``N day(s)|week(s)|month(s)|year(s) ago``; the rolling forms
+    ``last|past N days/weeks/months/years``; and ``recently`` / ``lately``.
+
+    A rolling window is used where the phrase is rolling ("last 30 days" ends
+    now) and a calendar window where the phrase is calendrical ("last month" is
+    the whole of the previous month).  IWTT never narrows a phrase beyond the
+    precision the phrase itself carries.
     """
     moment = _utc(now or datetime.now(timezone.utc))
     text = _SPACING.sub(" ", (expression or "").strip().lower())
@@ -303,10 +323,42 @@ def parse_time_expression(expression: str, *, now: datetime | None = None) -> Ti
         count = int(raw_count) if raw_count.isdigit() else _WORD_NUMBERS.get(raw_count, 0)
         if count > 0:
             return _ago_window(count, match.group("unit"), moment, expression)
+    match = re.fullmatch(
+        r"(?:last|past|previous)\s+(?P<count>\d+|[a-z]+)\s*(?P<unit>day|week|month|year)s?", text
+    )
+    if match:
+        raw_count = match.group("count")
+        count = int(raw_count) if raw_count.isdigit() else _WORD_NUMBERS.get(raw_count, 0)
+        if count > 0:
+            return _rolling_window(count, match.group("unit"), moment, expression)
+    if text in ("recently", "lately", "recent", "just recently"):
+        return _rolling_window(30, "day", moment, expression)
+
     bound = _parse_date_expression(text)
     if bound:
         return TimeWindow(bound[0], bound[1], text, expression)
     return None
+
+
+def _rolling_window(count: int, unit: str, moment: datetime, expression: str) -> TimeWindow:
+    """``last N units`` — a window that ends now.
+
+    Bounded at 3660 days so an absurd input ("last 999999 years") cannot produce
+    a range that makes every timestamp match and silently disables the filter.
+    """
+    if unit == "day":
+        delta = timedelta(days=count)
+    elif unit == "week":
+        delta = timedelta(weeks=count)
+    elif unit == "month":
+        delta = timedelta(days=30 * count)
+    else:
+        delta = timedelta(days=365 * count)
+    if delta > timedelta(days=3660):
+        delta = timedelta(days=3660)
+    start = _start_of_day(moment - delta)
+    label = f"last {count} {unit}{'s' if count > 1 else ''}"
+    return TimeWindow(start, moment, label, expression)
 
 
 def _ago_window(count: int, unit: str, moment: datetime, expression: str) -> TimeWindow:
@@ -370,7 +422,7 @@ def detect_time_hint(query: str, *, now: datetime | None = None) -> TimeWindow |
             resolved = parse_time_expression(match.group(0), now=moment)
             if resolved:
                 return TimeWindow(resolved.start, resolved.end, resolved.label,
-                                  resolved.expression, "query-hint")
+                                  resolved.expression, "query-hint", "ESTIMATED_RANGE")
 
     match = _AGO_PATTERN.search(text)
     if match:
@@ -379,7 +431,7 @@ def detect_time_hint(query: str, *, now: datetime | None = None) -> TimeWindow |
         if count:
             window = _ago_window(count, match.group("unit"), moment, match.group(0))
             return TimeWindow(window.start, window.end, window.label, window.expression,
-                              "query-hint")
+                              "query-hint", "ESTIMATED_RANGE")
 
     match = _IN_YEAR_PATTERN.search(text)
     if match:
@@ -387,18 +439,18 @@ def detect_time_hint(query: str, *, now: datetime | None = None) -> TimeWindow |
         start = datetime(year, 1, 1, tzinfo=timezone.utc)
         return TimeWindow(start, start.replace(month=12, day=31, hour=23, minute=59,
                                                second=59, microsecond=999999),
-                          f"in {year}", match.group(0), "query-hint")
+                          f"in {year}", match.group(0), "query-hint", "ESTIMATED_RANGE")
 
     match = _NAMED_HINT_PATTERN.search(text)
     if match:
         phrase = match.group(0)
         if phrase in ("recently", "lately"):
             start = _start_of_day(moment) - timedelta(days=30)
-            return TimeWindow(start, moment, "recently (last 30 days)", phrase, "query-hint")
+            return TimeWindow(start, moment, "recently (last 30 days)", phrase, "query-hint", "ESTIMATED_RANGE")
         normalized_phrase = phrase.replace("past ", "last ")
         resolved = window_for(normalized_phrase, now=moment)
         if resolved:
-            return TimeWindow(resolved.start, resolved.end, resolved.label, phrase, "query-hint")
+            return TimeWindow(resolved.start, resolved.end, resolved.label, phrase, "query-hint", "ESTIMATED_RANGE")
 
     match = _BARE_YEAR_PATTERN.search(text)
     if match:
@@ -406,7 +458,7 @@ def detect_time_hint(query: str, *, now: datetime | None = None) -> TimeWindow |
         start = datetime(year, 1, 1, tzinfo=timezone.utc)
         return TimeWindow(start, start.replace(month=12, day=31, hour=23, minute=59,
                                                second=59, microsecond=999999),
-                          f"in {year}", match.group(0), "query-hint")
+                          f"in {year}", match.group(0), "query-hint", "ESTIMATED_RANGE")
     return None
 
 

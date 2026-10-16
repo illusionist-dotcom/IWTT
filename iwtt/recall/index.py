@@ -37,21 +37,42 @@ from .config import (
     RecallConfig,
     hub_factor_for_degree,
 )
-from .text import token_variants, tokenize, trigram_counts, vector_norm
+from .text import recall_variants, tokenize, trigram_counts, vector_norm
 
-#: Derived tables owned by Recall V2.  Listed explicitly so
-#: ``clear_derived_data()`` can wipe them without introspection.
-RECALL_DERIVED_TABLES: tuple[str, ...] = (
-    "recall_meta",
+#: Derived tables owned by Recall V2, split by what they describe.  The split is
+#: published here — rather than inferred by callers — because the two groups have
+#: genuinely different integrity contracts.
+#:
+#: **Per-thought** tables hold state about ONE thought.  Every one of them carries
+#: ``thought_id REFERENCES thoughts(id) ON DELETE CASCADE``, so deleting a thought
+#: cannot leave its derived intelligence behind, and none of them can outlive the
+#: memory they describe.
+RECALL_PER_THOUGHT_TABLES: tuple[str, ...] = (
     "recall_tokens",
-    "recall_term_stats",
     "recall_trigrams",
     "recall_docs",
     "recall_graph_cache",
     "recall_clusters",
     "recall_query_memory",
+)
+
+#: **Global aggregate** tables hold corpus-wide state that belongs to no single
+#: thought: term document frequencies, vault-level bookkeeping, build history.
+#: A ``thought_id`` foreign key on these would be architecturally wrong — a
+#: document frequency is a property of the whole corpus, and pinning it to one
+#: thought would make it meaningless.  Their contract is different and is enforced
+#: instead by: (a) being derived and rebuildable from canonical data alone;
+#: (b) being wiped by ``clear_derived_data()``; (c) never containing canonical
+#: content; and (d) being recomputed on the next index refresh after any canonical
+#: change, so a deleted thought cannot leave a stale frequency behind.
+RECALL_GLOBAL_TABLES: tuple[str, ...] = (
+    "recall_term_stats",
+    "recall_meta",
     "recall_build_log",
 )
+
+#: Listed explicitly so ``clear_derived_data()`` can wipe them without introspection.
+RECALL_DERIVED_TABLES: tuple[str, ...] = RECALL_PER_THOUGHT_TABLES + RECALL_GLOBAL_TABLES
 
 RECALL_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS recall_meta (
@@ -280,6 +301,27 @@ class RecallIndex:
     # build / sync
     # ------------------------------------------------------------------
 
+    def graph_signature(self, conn: sqlite3.Connection) -> str:
+        """Cheap probe for "did anything the clusters depend on change?".
+
+        Clusters are a function of the live relationship graph and of which
+        thoughts participate in it — not of what any thought says.  Editing or
+        adding text therefore cannot change a partition, and paying for a full
+        reclustering when only text moved is what made an incremental sync as
+        expensive as a rebuild.
+        """
+        edges = conn.execute(
+            "SELECT COUNT(*) AS n, COALESCE(MAX(updated_at),'') AS stamp FROM relationships "
+            "WHERE status IN ('CONFIRMED','SUGGESTED')"
+        ).fetchone()
+        connected = conn.execute(
+            "SELECT COUNT(*) FROM (SELECT DISTINCT id FROM ("
+            "  SELECT source_id AS id FROM relationships WHERE status IN ('CONFIRMED','SUGGESTED')"
+            "  UNION SELECT target_id AS id FROM relationships WHERE status IN ('CONFIRMED','SUGGESTED')"
+            "))"
+        ).fetchone()[0]
+        return f"{int(edges['n'])}|{edges['stamp']}|{int(connected)}"
+
     def canonical_signature(self, conn: sqlite3.Connection) -> str:
         """Cheap drift probe: six aggregates, no row materialisation."""
         thoughts = conn.execute("SELECT COUNT(*) FROM thoughts").fetchone()[0]
@@ -338,6 +380,7 @@ class RecallIndex:
             self._set_meta(conn, "built_at", built_at)
             self._set_meta(conn, "build_scope", scope)
             self._set_meta(conn, "sync_signature", self.canonical_signature(conn))
+            self._set_meta(conn, "graph_signature", self.graph_signature(conn))
             self._set_meta(conn, "document_count", str(len(rows)))
 
         # Clustering runs in its own transaction: it is a batch job over the
@@ -410,10 +453,79 @@ class RecallIndex:
                 return None
             stale, removed = self._diff(conn)
         if not stale and not removed:
+            # The signature moved, so canonical data changed — but every per-thought
+            # row is already correct.  That is the signature of a deletion the
+            # ``ON DELETE CASCADE`` foreign keys handled before this sync saw it.
+            #
+            # A cascade cannot reach the GLOBAL aggregates (``recall_term_stats``,
+            # ``recall_graph_cache``), because a document frequency belongs to the
+            # corpus rather than to one thought.  Left alone, the deleted thought's
+            # frequencies would survive it forever and quietly skew IDF — the
+            # signature would already have been re-stamped, so nothing would ever
+            # reconcile them.  Recomputing here is bounded (one aggregate pass over
+            # the token index) and only happens when something actually changed.
             with self.vault._transaction() as conn:
-                self._set_meta(conn, "sync_signature", signature)
-            return None
+                report = self._reconcile_global_aggregates(conn, signature)
+            return report
         return self.sync(stale_ids=stale, removed_ids=removed)
+
+    def _reconcile_global_aggregates(
+        self, conn: sqlite3.Connection, signature: str
+    ) -> BuildReport | None:
+        """Recompute corpus-wide derived state from the per-thought index.
+
+        Returns a report only when something was actually out of step, so a caller
+        can tell "checked and consistent" from "found drift and repaired it".
+        """
+        started = time.perf_counter()
+        stale_terms = int(conn.execute(
+            """
+            SELECT COUNT(*) FROM recall_term_stats ts
+            LEFT JOIN (SELECT token, COUNT(DISTINCT thought_id) AS df FROM recall_tokens
+                       GROUP BY token) live ON live.token = ts.term
+            WHERE live.token IS NULL OR live.df <> ts.df
+            """
+        ).fetchone()[0])
+        degrees_drifted = int(conn.execute(
+            """
+            SELECT COUNT(*) FROM recall_graph_cache g
+            LEFT JOIN (
+                SELECT id, (
+                    SELECT COUNT(*) FROM relationships r
+                    WHERE r.status IN ('CONFIRMED','SUGGESTED')
+                      AND (r.source_id = t.id OR r.target_id = t.id)
+                ) AS degree
+                FROM thoughts t
+            ) live ON live.id = g.thought_id
+            WHERE live.id IS NULL OR live.degree <> g.degree
+            """
+        ).fetchone()[0])
+        if not stale_terms and not degrees_drifted:
+            self._set_meta(conn, "sync_signature", signature)
+            return None
+
+        if stale_terms:
+            self._recompute_term_stats(conn)
+        if degrees_drifted:
+            self._build_graph_cache(conn)
+        self._set_meta(conn, "sync_signature", signature)
+        self._set_meta(conn, "last_sync_at", now_utc())
+        self._set_meta(conn, "build_scope", "reconcile")
+        self._set_meta(conn, "last_reconcile_at", now_utc())
+        report = BuildReport(
+            scope="reconcile",
+            documents=int(conn.execute("SELECT COUNT(*) FROM recall_docs").fetchone()[0]),
+            token_rows=int(conn.execute("SELECT COUNT(*) FROM recall_tokens").fetchone()[0]),
+            trigram_rows=int(conn.execute("SELECT COUNT(*) FROM recall_trigrams").fetchone()[0]),
+            terms=int(conn.execute("SELECT COUNT(*) FROM recall_term_stats").fetchone()[0]),
+            clusters=0,
+            duration_ms=(time.perf_counter() - started) * 1000,
+            phases={"staleTerms": stale_terms, "degreesDrifted": degrees_drifted},
+            built_at=now_utc(),
+            reindexed=0,
+            removed=stale_terms + degrees_drifted,
+        )
+        return report
 
     def _diff(self, conn: sqlite3.Connection) -> tuple[list[str], list[str]]:
         """Thoughts needing (re)indexing, and index rows whose thought is gone."""
@@ -457,6 +569,10 @@ class RecallIndex:
                 self._forget_thought(conn, row["id"])
             token_rows, trigram_rows = self._index_rows(conn, rows)
             self._build_graph_cache(conn)
+            # ``_forget_thought`` keeps df accurate for removals IT performs.  When a
+            # cascade got there first there is nothing for it to adjust, so the
+            # aggregate is reconciled from the token index on every sync.
+            self._recompute_term_stats(conn)
             self._set_meta(conn, "built_at", self._get_meta(conn, "built_at") or built_at)
             self._set_meta(conn, "last_sync_at", built_at)
             self._set_meta(conn, "build_scope", "sync")
@@ -467,7 +583,22 @@ class RecallIndex:
                 str(int(conn.execute("SELECT COUNT(*) FROM recall_docs").fetchone()[0])),
             )
             terms = int(conn.execute("SELECT COUNT(*) FROM recall_term_stats").fetchone()[0])
-        clusters = self.rebuild_clusters()
+            graph_signature = self.graph_signature(conn)
+            graph_changed = self._get_meta(conn, "graph_signature") != graph_signature
+            cluster_rows = int(conn.execute("SELECT COUNT(*) FROM recall_clusters").fetchone()[0])
+            thought_rows = int(conn.execute("SELECT COUNT(*) FROM thoughts").fetchone()[0])
+            needs_clusters = graph_changed or (cluster_rows == 0 and thought_rows > 0)
+            if not needs_clusters:
+                self._set_meta(conn, "graph_signature", graph_signature)
+        if needs_clusters:
+            clusters = self.rebuild_clusters()
+            with self.vault._transaction() as conn:
+                self._set_meta(conn, "graph_signature", graph_signature)
+        else:
+            with self.vault._connection() as conn:
+                clusters = int(conn.execute(
+                    "SELECT COUNT(DISTINCT cluster_id) FROM recall_clusters"
+                ).fetchone()[0])
         report = BuildReport(
             scope="sync",
             documents=len(rows),
@@ -569,7 +700,7 @@ class RecallIndex:
                     # Index the raw token AND its v0.1 morphological/alias
                     # variants, so "fighting" matches "fight" while a literal
                     # "fighting" query still scores at full strength.
-                    for form in token_variants(token):
+                    for form in recall_variants(token):
                         if form:
                             counts[form] = counts.get(form, 0) + 1
                             doc_forms.add(form)
@@ -841,6 +972,13 @@ class RecallIndex:
             "INSERT OR IGNORE INTO rq_tok(qtoken,token,qw) VALUES(?,?,?)",
             [(term, form, weight) for term, form, weight in query_forms],
         )
+        # The join below is written ``rq_tok CROSS JOIN recall_tokens`` on purpose.
+        # With a plain JOIN the planner scans the whole token table and probes the
+        # tiny query table (measured: SCAN of 16,896 rows at 1,000 thoughts, so the
+        # cost grows with the vault).  CROSS JOIN forbids reordering, so SQLite
+        # walks the handful of query forms and SEARCHes recall_tokens through
+        # recall_tokens_token_idx instead — cost proportional to the matches, not to
+        # the corpus.  Same rows, same order, different plan.
         rows = conn.execute(
             """
             SELECT t.thought_id                        AS thought_id,
@@ -852,7 +990,8 @@ class RecallIndex:
                               ELSE ? END)              AS weighted_tf,
                    GROUP_CONCAT(DISTINCT q.qtoken)     AS qtokens,
                    GROUP_CONCAT(DISTINCT t.field)      AS fields
-            FROM recall_tokens t JOIN rq_tok q ON q.token = t.token
+            FROM rq_tok q CROSS JOIN recall_tokens t
+            WHERE t.token = q.token
             GROUP BY t.thought_id
             ORDER BY idf_sum DESC, matched_terms DESC, weighted_tf DESC, t.thought_id ASC
             LIMIT ?
@@ -937,6 +1076,28 @@ class RecallIndex:
             meta["guardTripped"] = True
             return {}, meta
 
+        # Drop character fragments that appear (almost) everywhere before paying to
+        # read their postings.  Deterministic, and reported rather than silent.
+        postings_cap = max(
+            int(self.config.trigram_postings_floor),
+            int(total_docs * self.config.trigram_postings_fraction),
+        )
+        skipped = sorted(
+            gram for gram, occurrences in postings.items() if occurrences > postings_cap
+        )
+        meta["postingsCap"] = postings_cap
+        meta["trigramsSkippedTooCommon"] = skipped
+        meta["trigramsUsed"] = len(counts) - len(skipped)
+        if skipped:
+            drop = set(skipped)
+            counts = {gram: tf for gram, tf in counts.items() if gram not in drop}
+        if not counts:
+            # Every query trigram was ubiquitous, so none of them can narrow
+            # anything: the never-worse contract applies and the lexical set runs
+            # unfiltered.
+            meta["guardTripped"] = True
+            return {}, meta
+
         limit = int(limit or self.config.trigram_candidate_cap)
         query_norm = vector_norm(counts)
         conn.execute("DROP TABLE IF EXISTS temp.rq_tri")
@@ -944,12 +1105,18 @@ class RecallIndex:
         conn.executemany(
             "INSERT OR IGNORE INTO rq_tri(trigram,qtf) VALUES(?,?)", sorted(counts.items())
         )
+        # ``rq_tri CROSS JOIN recall_trigrams`` for the same reason as the lexical
+        # query: without it SQLite scans every trigram row in the vault (71,872 at
+        # 1,000 thoughts) per query, which is precisely the unbounded cost v0.2 is
+        # supposed to eliminate.  With it, the query's ~40 trigrams each SEARCH the
+        # (trigram, thought_id) primary key.
         rows = conn.execute(
             """
             SELECT t.thought_id            AS thought_id,
                    SUM(t.tf * q.qtf)       AS dot,
                    COUNT(*)                AS shared
-            FROM recall_trigrams t JOIN rq_tri q ON q.trigram = t.trigram
+            FROM rq_tri q CROSS JOIN recall_trigrams t
+            WHERE t.trigram = q.trigram
             GROUP BY t.thought_id
             ORDER BY shared DESC, dot DESC, t.thought_id ASC
             LIMIT ?

@@ -19,6 +19,18 @@ Node coordinates, edge routing, cluster layouts, camera/zoom state, spatial regi
 
 A later version could add separately versioned, rebuildable projections for clusters, semantic embeddings, time layers, or spatial layout. Those additions should reference canonical UUIDs and retain provenance/model/version metadata. A future cluster that the user adopts as knowledge should become an explicit canonical object/relationship with history—not a hidden graph coordinate.
 
+## What v0.2 added to this, and what it still is not
+
+v0.2 adds a derived intelligence layer, not a world. The one piece of future
+presentation compatibility it ships is `entityType` on every `GraphViewModel` node
+(`THOUGHT_ENTITY` today, with `EXTERNAL_KNOWLEDGE_ENTITY` reserved), so a future
+renderer can mix entity kinds without ever reinterpreting a Thought as something else.
+`GraphViewModel` remains bounded, induced, coordinate-free and non-persisted — a view a
+renderer may consume, never a scene graph IWTT owns.
+
+No spatial schema, no renderer, no avatars, no multiplayer, no persistence of layout.
+The Mind World is still not being built.
+
 ## Explicit v0.1 boundary
 
 No infinite world, 3D environment, avatar, multiplayer/social system, spatial editing, animation engine, or full Mind World is included. The small Connections view is an inspection aid only.

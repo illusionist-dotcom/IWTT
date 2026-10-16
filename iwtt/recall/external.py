@@ -292,6 +292,40 @@ def capability_manifest() -> dict[str, Any]:
     return dict(CAPABILITY_MANIFEST)
 
 
+def foundation_payload() -> dict[str, Any]:
+    """The whole external-knowledge foundation, as one inspectable payload.
+
+    Documentation and interfaces only.  Calling this creates no table, writes no
+    row and invents no entity — which is the point: the boundary is published so it
+    can be reviewed before anything is ever built on it.
+    """
+    return {
+        "implemented": False,
+        "canonical": False,
+        "persisted": False,
+        "entityKinds": list(ENTITY_KINDS),
+        "entityKindDefinitions": {
+            ENTITY_THOUGHT: "A human thought. Canonical, immutable, authored by the user.",
+            ENTITY_EXTERNAL: (
+                "Reserved. External knowledge (repository, source file, class, function, "
+                "document, pdf section, bug, test, commit, research source). Never a Thought."
+            ),
+        },
+        "externalEntityTypes": list(EXTERNAL_ENTITY_TYPES),
+        "externalProvenance": list(EXTERNAL_PROVENANCE),
+        "capabilityManifest": capability_manifest(),
+        "crossDomainDesign": cross_domain_design(),
+        "guards": ["assert_not_thought", "assert_thought", "validate_candidate_entity"],
+        "storageCreated": [],
+        "note": (
+            "Interfaces and documentation only. IWTT v0.2 ingests no repositories, parses no "
+            "ASTs and reads no PDFs, and the canonical schema is unchanged. A future "
+            "implementation gets its own registry and its own id namespace; it never becomes "
+            "a Thought, and a Thought never becomes a file."
+        ),
+    }
+
+
 def validate_candidate_entity(payload: Any) -> dict[str, Any]:
     """Validate a *hypothetical* future ingestion payload without storing it.
 
@@ -321,5 +355,15 @@ def validate_candidate_entity(payload: Any) -> dict[str, Any]:
         ingested_at=str(payload.get("ingestedAt") or payload.get("ingested_at") or ""),
         attributes=dict(payload.get("attributes") or {}),
     )
-    assert_not_thought(reference, context="validate_candidate_entity")
+    # ``assert_not_thought`` guards a *canonical write* — it refuses to let an
+    # external entity be recorded as a Thought.  This function is not writing a
+    # Thought, it is validating an external payload, so the check that belongs here
+    # is the opposite one: whatever was built must actually be external.  (Calling
+    # the canonical-write guard here rejected every valid payload, which is how the
+    # mistake was caught.)
+    if entity_kind_of(reference) != ENTITY_EXTERNAL:
+        raise EntityBoundaryError(
+            "validate_candidate_entity produced something that is not an "
+            "EXTERNAL_KNOWLEDGE_ENTITY (validate_candidate_entity)"
+        )
     return reference.to_dict()

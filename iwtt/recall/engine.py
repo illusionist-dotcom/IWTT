@@ -407,6 +407,7 @@ class RecallEngine:
         clusters = self.index.clusters()
         titles = {c.thought_id: c.display_title for c in survivors}
         results: list[RecallResult] = []
+        suppressed: list[dict[str, Any]] = []
         for candidate in survivors:
             graph_signal = graph_signals.get(candidate.thought_id)
             temporal_value, temporal_label = self._temporal_signal(
@@ -452,6 +453,19 @@ class RecallEngine:
                 memory_signal=memory_signal,
             )
             if score <= 0 and not graph_signal:
+                # Record what the lexical-evidence gate suppressed.  Refusing to
+                # return a coincidence is right; refusing to mention that a
+                # coincidence was measured and rejected would be hiding evidence.
+                if not signals.lexical_evidence and (
+                    signals.gated_fuzzy > 0 or signals.gated_trigram > 0
+                ):
+                    suppressed.append({
+                        "thoughtId": candidate.thought_id,
+                        "displayTitle": candidate.display_title,
+                        "gatedFuzzy": round(signals.gated_fuzzy, 4),
+                        "gatedTrigram": round(signals.gated_trigram, 4),
+                        "reason": "NO_LEXICAL_EVIDENCE",
+                    })
                 continue
             relationship_context = None
             if graph_signal:
@@ -490,9 +504,69 @@ class RecallEngine:
         # --- 8. deterministic ranking + states ---------------------------
         mark = time_module.perf_counter()
         results.sort(key=sort_key)
-        qualified = [result for result in results if result.score >= self.config.min_score]
+        def returnable(result: RecallResult) -> bool:
+            """The single published rule for what IWTT will hand back.
+
+            Two conditions, both deliberate:
+
+            1. the score clears ``min_score``; and
+            2. the candidate has lexical evidence of its own — a word in common
+               with the query — unless ``graph_may_surface_without_lexical_evidence``
+               is switched on.
+
+            Condition 2 is what keeps graph expansion an enrichment rather than a
+            replacement for retrieval: association alone, however strong the edge,
+            is never reported as a match.  It is recorded just below instead.
+            """
+            if result.score < self.config.min_score:
+                return False
+            return bool(
+                result.signals.lexical_evidence
+                or self.config.graph_may_surface_without_lexical_evidence
+            )
+
+        qualified = [result for result in results if returnable(result)]
         below_threshold = not qualified
-        ranked = qualified if qualified else results[: self.config.ambiguity_min_candidates]
+        ranked = qualified if qualified else [
+            result for result in results if returnable(result) or result.signals.lexical_evidence
+        ][: self.config.ambiguity_min_candidates]
+
+        # What graph expansion reached but IWTT declined to return, and why.
+        # Expansion enriches retrieval; it never replaces it, so a thought with no
+        # word in common is not a match — not even one the user linked by hand.
+        # Naming it anyway is the difference between "no match" and "here is the
+        # connection you made, which is not the same as a match".
+        graph_declined = [
+            {
+                "thoughtId": result.thought_id,
+                "displayTitle": result.display_title,
+                "score": round(result.score, 4),
+                "floor": self.config.min_score,
+                "graphDepth": result.signals.graph_depth,
+                "graphProvenance": result.signals.graph_provenance,
+                "graphLabel": result.signals.graph_label,
+                "graphOnly": not result.signals.lexical_evidence,
+                "origin": result.signals.graph_origin,
+                "originTitle": result.relationship_context.display_title
+                if result.relationship_context else "",
+                "reason": (
+                    "BOTH"
+                    if result.score < self.config.min_score and not result.signals.lexical_evidence
+                    else "BELOW_MIN_SCORE"
+                    if result.score < self.config.min_score
+                    else "NO_LEXICAL_EVIDENCE"
+                ),
+            }
+            for result in results
+            if result.signals.graph_depth > 0 and not returnable(result)
+        ]
+        if graph_declined:
+            graph_declined.sort(key=lambda item: (-item["score"], item["thoughtId"]))
+            outcome.honesty["graphReachedBelowThreshold"] = graph_declined[:5]
+            outcome.honesty["graphReachedBelowThresholdCount"] = len(graph_declined)
+            outcome.honesty["graphReachedReturnedCount"] = sum(
+                1 for result in ranked if result.signals.graph_depth > 0
+            )
         ranked = ranked[: filters.limit]
         for position, result in enumerate(ranked, start=1):
             result.rank = position
@@ -505,6 +579,40 @@ class RecallEngine:
                 f"it will claim a match. The {len(ranked)} weakest-but-closest candidates are shown "
                 f"anyway — nothing was hidden."
             )
+        if excluded_report["totalExcluded"] and state != OutcomeState.NO_MATCH:
+            # Results exist, but a filter still hid something that matched the
+            # words.  Say so in one sentence rather than only in the honesty
+            # record: an omission the user cannot see is an omission that will be
+            # read as "that thought is gone".
+            by_reason = excluded_report["byReason"]
+            detail = ", ".join(
+                f"{count} by {excluded_report['labels'][reason]}"
+                for reason, count in sorted(by_reason.items())
+            )
+            message = (
+                f"{message} Note: {excluded_report['totalExcluded']} candidate(s) also matched "
+                f"your words but were excluded by your filters ({detail})."
+            )
+            ambiguity["filteredOut"] = excluded_report
+
+        if suppressed:
+            suppressed.sort(
+                key=lambda item: (-item["gatedFuzzy"], -item["gatedTrigram"], item["thoughtId"])
+            )
+            outcome.honesty["suppressedNoLexicalEvidence"] = suppressed[:5]
+            outcome.honesty["suppressedCount"] = len(suppressed)
+            if state == OutcomeState.NO_MATCH:
+                worst = suppressed[0]
+                message = (
+                    f"No word of that query appears in any thought, so there is nothing to match. "
+                    f"{len(suppressed)} candidate(s) shared only character patterns — the closest was "
+                    f"“{worst['displayTitle']}” at {worst['gatedFuzzy']:.2f} wording similarity — and "
+                    f"IWTT suppressed them rather than present a coincidence as a match. It has no "
+                    f"semantic stage and will not guess at meaning. Try a word you think you actually "
+                    f"used, a tag, a connection, or a time."
+                )
+                ambiguity["suppressedNoLexicalEvidence"] = suppressed[:5]
+
         if not ranked and rejected:
             # Candidates matched the words but a filter removed them, and nothing
             # else scored.  Say which of those two things happened.
@@ -550,6 +658,13 @@ class RecallEngine:
                 "sqlPrefilterApplied": generation_meta.get("sqlPrefilterApplied", False),
                 "prefilterExcluded": len(prefilter_excluded),
                 "prefilterExcludedAccountedFor": bool(excluded_report["totalExcluded"]),
+                # The fuzzy budget belongs here as well as at the top level: this
+                # is the record a reader consults to ask "what did you examine?".
+                "fuzzyPassCandidates": len(fuzzy_ids),
+                "fuzzyPassCap": self.config.fuzzy_scoring_cap,
+                "lexicalCandidateCap": self.config.token_candidate_cap,
+                "trigramCandidateCap": self.config.trigram_candidate_cap,
+                "trigramGuardFraction": self.config.trigram_guard_fraction,
             },
             "fuzzyPassCandidates": len(fuzzy_ids),
             "fuzzyPassCap": self.config.fuzzy_scoring_cap,
