@@ -34,7 +34,7 @@ Default database: `~/.iwtt/thought-vault.sqlite3` (SQLite, WAL mode). Backups ar
 - **Connection Explorer V2** — derived clustering with stable identities, cohesion scores and authority labels, behind a clean `GraphViewModel` boundary that never holds the whole vault in memory.
 - **Time and lifecycle recall** — `today`, `last week`, `past 3 months`, `recently`, `between X and Y`, `in 2024`, Graveyard inclusion — with inferred windows explicitly labelled `ESTIMATED_RANGE` rather than presented as precision IWTT does not have.
 - **External-knowledge foundation** — entity kinds, a closed ten-type vocabulary, a separate provenance vocabulary, guards that raise, and a documented cross-domain chain (`Thought → Experiment → Project → Source File → Function → Bug → Fix → New Thought`) whose deferred edges each name their blocker. Interfaces and documentation only: nothing is ingested.
-- **Measured performance** — recall p95 154 ms at 1,000 thoughts and 441 ms at 10,000, with the examined candidate set bounded by an absolute cap (73.6% of a 1,000-thought vault, 9.6% of a 10,000-thought one). See [BENCHMARKS.md](BENCHMARKS.md).
+- **Measured performance** — recall p95 118 ms at 1,000 thoughts and 404 ms at 10,000, with the examined candidate set bounded by an absolute cap (73.5% of a 1,000-thought vault, 9.7% of a 10,000-thought one). See [BENCHMARKS.md](BENCHMARKS.md).
 - **No canonical schema change.** `schema_info.schema_version` is still `1`, the export schema version is still `1`, every v0.1 route and test still behaves identically, and opening a v0.1 vault migrates it in place without rewriting a single canonical row. See [V0.1_TO_V0.2_MIGRATION.md](V0.1_TO_V0.2_MIGRATION.md).
 
 ## What works in v0.1

@@ -164,7 +164,7 @@ and results are unchanged); at 10,000 thoughts it removes the fragments that app
 everywhere.
 
 Measured effect (`scripts/benchmark_recall.py --suite`): the vault grew 10× while the
-examined candidate set grew 1.31× (736 → 964), i.e. **sublinear**.
+examined candidate set grew 1.31× (735 → 966), i.e. **sublinear**.
 
 ---
 
@@ -374,12 +374,12 @@ script; details and method in `BENCHMARKS.md`.
 
 | | 1,000 thoughts | 10,000 thoughts |
 | --- | --- | --- |
-| Index build | 0.58 s | 11.36 s |
-| Recall p50 / p95 / max | 84 / 154 / 197 ms | 236 / 441 / 661 ms |
-| Candidates examined (max) | 736 (73.6% of vault) | 964 (9.6% of vault) |
-| Adding 50 thoughts + 1 recall | 0.34 s | 0.79 s |
-| Cluster rebuild | 0.014 s | 1.24 s |
-| Peak RSS | 89 MB | 279 MB |
+| Index build | 0.56 s | 10.10 s |
+| Recall p50 / p95 / max | 72 / 118 / 187 ms | 205 / 404 / 444 ms |
+| Candidates examined (max) | 735 (73.5% of vault) | 966 (9.7% of vault) |
+| Adding 50 thoughts + 1 recall | 0.24 s | 0.98 s |
+| Cluster rebuild | 0.014 s | 0.83 s |
+| Peak RSS | 88.8 MB | 279.3 MB |
 | Ranking mismatches on repeat | 0 / 50 | 0 / 50 |
 
 The candidate set is bounded by an **absolute** cap, so the fraction of the vault it

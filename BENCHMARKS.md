@@ -9,6 +9,12 @@ measured by their harness on their corpora. Those numbers are quoted in
 `GRAPHIFY_ADAPTATION_NOTES.md` §6 **as their claims, for context only**, and are never
 presented as IWTT results.
 
+The figures below are from the run on the **committed v0.2 tree** (`e937732`), 2026-10-16.
+Run-to-run variance on this container is roughly ±20% for latency percentiles (an
+earlier run of the identical code measured p95 154 ms at 1,000 and 441 ms at 10,000);
+the budgets in §4 are set with that headroom, and the *shape* of the results — the
+absolute candidate cap, sublinear scaling, zero ranking mismatches — does not vary.
+
 Reproduce with:
 
 ```bash
@@ -53,24 +59,25 @@ Relationships are sparse: one edge per four thoughts (`RELATED_TO`), so 249 edge
 | Result | **PASS** | **PASS** |
 | Vault file | 17.6 MB | 168.2 MB |
 | Relationships / tags / revisions / events | 249 / 12 / 1,000 / 2,263 | 2,499 / 12 / 10,000 / 22,546 |
-| Insert 1,000 / 10,000 thoughts | 2.00 s | 23.30 s |
-| **Full index build** | **0.58 s** | **11.36 s** |
+| Insert all thoughts (canonical write path) | 1.90 s | 18.38 s |
+| **Full index build (incl. clustering)** | **0.56 s** | **10.10 s** |
 | Index rows: tokens / trigrams / terms | 16,723 / 71,106 / 1,502 | 167,523 / 713,849 / 13,611 |
-| **Recall p50** | **84.5 ms** | **236.2 ms** |
-| **Recall p95** | **154.5 ms** | **440.9 ms** |
-| Recall p99 | 183.9 ms | 574.3 ms |
-| Recall max | 197.1 ms | 661.1 ms |
-| 200 queries, total | 17.36 s | 49.54 s |
+| **Recall p50** | **72.3 ms** | **205.1 ms** |
+| **Recall p95** | **117.7 ms** | **404.1 ms** |
+| Recall p99 | 139.4 ms | 439.3 ms |
+| Recall max | 187.0 ms | 443.5 ms |
+| Recall mean | 74.7 ms | 214.1 ms |
+| 200 queries, total | 14.93 s | 42.83 s |
 | **Candidates examined, mean** | **421** | **619** |
-| **Candidates examined, max** | **736** | **964** |
-| …as a fraction of the vault | 73.6 % | **9.6 %** |
-| Graph expansion p95 | 2.6 ms | 2.5 ms |
+| **Candidates examined, max** | **735** | **966** |
+| …as a fraction of the vault | 73.5 % | **9.7 %** |
+| Graph expansion p95 | 1.9 ms | 1.8 ms |
 | Results returned, mean | 19.6 | 19.6 |
-| **Add 50 thoughts + 1 recall** | **0.34 s** | **0.79 s** |
-| Cluster rebuild | 0.014 s | 1.24 s |
-| `graph_view_model(max_nodes=200)` | 0.023 s (truncated) | 0.637 s (truncated) |
-| **Peak RSS** | **89 MB** | **279 MB** |
-| RSS growth over baseline | 65 MB | 190 MB |
+| **Add 50 thoughts + 1 recall (incremental sync)** | **0.24 s** | **0.98 s** |
+| Cluster rebuild (751 / 7,501 clusters) | 0.014 s | 0.83 s |
+| `graph_view_model(max_nodes=200)` | 0.018 s (truncated) | 0.729 s (truncated) |
+| **Peak RSS** | **88.8 MB** | **279.3 MB** |
+| RSS growth over baseline | 65.0 MB | 190.4 MB |
 | **Ranking mismatches on repeat** | **0 / 50** | **0 / 50** |
 
 Outcome-state distribution over the 200 queries (1,000 / 10,000): `AMBIGUOUS` 118 /
@@ -89,16 +96,16 @@ question is not "how fast is it" but "does the work grow with the vault". It doe
 
 ```
 vaultGrowth:                    10.0×     (1,000 → 10,000 thoughts)
-candidateGrowth:                 1.31×    (736 → 964 candidates examined)
-candidateFractionSmallVault:    73.6 %
-candidateFractionLargeVault:     9.6 %
+candidateGrowth:                 1.31×    (735 → 966 candidates examined)
+candidateFractionSmallVault:    73.5 %
+candidateFractionLargeVault:     9.7 %
 sublinear:                      true
 ```
 
 `--suite` mode asserts this and fails if either property breaks: candidates must grow
 more slowly than the vault, and the examined fraction must shrink. The 73.6% figure at
 1,000 thoughts is the cap doing its job on a tiny, low-diversity corpus — it is not a
-corpus scan, because the same cap yields 9.6% at 10,000 and would yield under 1% at
+corpus scan, because the same cap yields 9.7% at 10,000 and would yield under 1% at
 100,000.
 
 **No giant in-memory canonical graph.** Peak RSS is 279 MB at 10,000 thoughts, and
@@ -116,11 +123,11 @@ Declared in the script, checked on every run:
 
 | | 1,000 | 10,000 | Measured 1,000 | Measured 10,000 |
 | --- | --- | --- | --- | --- |
-| Index build | ≤ 60 s | ≤ 300 s | 0.58 s | 11.36 s |
-| Recall p95 | ≤ 250 ms | ≤ 600 ms | 154.5 ms | 440.9 ms |
-| Recall max | ≤ 1,500 ms | ≤ 4,000 ms | 197.1 ms | 661.1 ms |
-| Peak RSS | ≤ 600 MB | ≤ 1,200 MB | 89 MB | 279 MB |
-| Candidates examined | ≤ 1,000 (absolute cap) | ≤ 1,000 | 736 | 964 |
+| Index build | ≤ 60 s | ≤ 300 s | 0.56 s | 10.10 s |
+| Recall p95 | ≤ 250 ms | ≤ 600 ms | 117.7 ms | 404.1 ms |
+| Recall max | ≤ 1,500 ms | ≤ 4,000 ms | 187.0 ms | 443.5 ms |
+| Peak RSS | ≤ 600 MB | ≤ 1,200 MB | 88.8 MB | 279.3 MB |
+| Candidates examined | ≤ 1,000 (absolute cap) | ≤ 1,000 | 735 | 966 |
 | Ranking mismatches | 0 | 0 | 0 | 0 |
 
 ---
@@ -128,16 +135,18 @@ Declared in the script, checked on every run:
 ## 5. What was measured, and what it cost to get there
 
 These numbers are the result of four measured fixes, each found by profiling rather
-than guessed. Before them, recall at 1,000 thoughts was **p50 292 ms / p95 491 ms**,
-and adding 50 thoughts to a 10,000-thought vault took **45.4 s**.
+than guessed. Before them, recall at 1,000 thoughts was **p50 292 ms / p95 491 ms**, and adding 50
+thoughts to a 10,000-thought vault took **45.4 s**. After them, on the committed tree:
+**p50 72 ms / p95 118 ms** at 1,000, **p50 205 ms / p95 404 ms** at 10,000, and
+**0.98 s** for the incremental case.
 
 | Fix | Where | Before → after (1,000 thoughts) |
 | --- | --- | --- |
 | Memoize pure text analysis (`morphology_forms`, `recall_variants`, `word_trigrams`, `cached_normalize`) — bounded LRU, keyed by exact input, so a hit and a miss return identical values | `recall/text.py` | ~1,000,000 trigram recomputations per 40 queries → 0 |
 | Memoize pure per-candidate work (`token_forms`, `variant_forms`, `length_buckets`) and refactor `term_tier` into a cached pure core | `recall/scoring.py` | p50 292 → 172 ms |
-| Cache `fuzzy_ratio` / `best_window`; `min()` instead of `sorted()[0]`; batch the per-edge degree/title lookups that were an N+1 | `recall/text.py`, `scoring.py`, `expansion.py` | p50 172 → 74 ms |
-| `CROSS JOIN` so SQLite probes the index instead of scanning it; skip ubiquitous trigrams above a calibrated postings cap | `recall/index.py` | p95 665 → 441 ms at 10,000 |
-| De-quadratise clustering (inverted-index remap, single-pass internal-edge counts) and skip reclustering when `graph_signature` is unchanged | `recall/clusters.py`, `index.py` | cluster rebuild 30 s → 1.24 s at 10,000; incremental sync 45.4 s → 0.79 s |
+| Cache `fuzzy_ratio` / `best_window`; `min()` instead of `sorted()[0]`; batch the per-edge degree/title lookups that were an N+1 | `recall/text.py`, `scoring.py`, `expansion.py` | p50 172 → 72 ms |
+| `CROSS JOIN` so SQLite probes the index instead of scanning it; skip ubiquitous trigrams above a calibrated postings cap | `recall/index.py` | p95 665 → 404 ms at 10,000 |
+| De-quadratise clustering (inverted-index remap, single-pass internal-edge counts) and skip reclustering when `graph_signature` is unchanged | `recall/clusters.py`, `index.py` | cluster rebuild ~30 s → 0.83 s at 10,000; incremental sync 45.4 s → 0.98 s |
 
 Query plans, verified with `EXPLAIN QUERY PLAN`:
 
@@ -168,7 +177,7 @@ Same rows, same order, cost proportional to the matches instead of to the corpus
 * **No network latency**, because there is no network. Recall makes no requests.
 * **Index build time excludes clustering** in the `durationMs` field of the build
   report; the `indexBuildSeconds` figure in the table includes it. At 10,000 thoughts
-  the build report says 11,085 ms and clustering adds ~1.2 s.
+  the build report says 9,875 ms and clustering adds ~0.8 s.
 * **Insert time is IWTT's canonical write path** (one transaction per thought, with
   revisions, events and search-document maintenance), not a bulk loader. It is
   reported so the total cost of the experiment is visible, not because it is a recall

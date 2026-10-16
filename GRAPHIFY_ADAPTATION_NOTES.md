@@ -170,10 +170,10 @@ code-intelligence tool and IWTT is a memory vault:
 * **Global-aggregate reconciliation** after a cascade deletion, so a deleted thought
   cannot leave orphaned or inflated document frequencies behind (`_reconcile_global_aggregates`).
 * **`graph_signature`**, which lets an incremental sync skip reclustering when only
-  text changed (measured: 45.4 s → 0.79 s for 50 new thoughts at 10,000).
+  text changed (measured: 45.4 s → 0.98 s for 50 new thoughts at 10,000).
 * **Memoization of pure text/tier functions** keyed by their exact inputs, with
   bounded LRU sizes — determinism preserved because a hit and a miss return the same
-  value (measured: p95 491 ms → 154 ms at 1,000 thoughts).
+  value (measured: p95 491 ms → 118 ms at 1,000 thoughts).
 * **The `honesty` block** on every outcome: five plain-language statements plus
   machine-readable fields, so no caller has to guess what ran.
 * **The external-knowledge boundary** (`EXTERNAL_KNOWLEDGE_ARCHITECTURE.md`): entity

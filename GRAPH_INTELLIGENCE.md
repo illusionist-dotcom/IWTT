@@ -221,7 +221,7 @@ thought says. `RecallIndex.graph_signature()` (edge count, max edge `updated_at`
 count of distinct participating thoughts) is stored in `recall_meta`; an incremental
 sync that only touched text does not pay for a reclustering. Measured effect: adding
 50 thoughts to a 10,000-thought vault and running a recall went from 45.4 s to
-0.79 s.
+0.98 s, and a full reclustering of 7,501 clusters from ~30 s to 0.83 s.
 
 ---
 
