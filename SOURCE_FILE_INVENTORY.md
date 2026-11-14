@@ -10,6 +10,7 @@ Line counts are for the v0.2 tree (8,416 lines in `iwtt/recall/` alone).
 - `.gitignore` — excludes runtime databases, caches, backups, and secrets from source snapshots.
 - `VERSION` — application version (`0.2.0`), canonical export schema version (`1`, **unchanged from v0.1**), canonical `schema_info.schema_version` (`1`), recall derived index schema version (`3`), and the Checkpoint 001 baseline commit hash.
 - `README.md` — local setup, v0.2 feature guide, honest limits, documentation index, and test commands.
+- `Start-IWTT.cmd` — source-checkout Windows launcher; starts the local server and browser UI.
 - `Makefile` — `run`, `test`, and `verify` shortcuts.
 - `requirements.txt` — documents the zero-third-party-dependency runtime. True in v0.2: recall adds no package.
 
@@ -38,8 +39,9 @@ Line counts are for the v0.2 tree (8,416 lines in `iwtt/recall/` alone).
 ## Python package — canonical core
 
 - `iwtt/__init__.py` — package version.
-- `iwtt/store.py` — SQLite schema and constraints, canonical operations, v0.1 local search (frozen), events, import/export, backup, demo fixture, `canonical_fingerprint()`, `clear_derived_data()`, `schema_versions()` / `schema_info_rows()`, and the v0.2 delegate surface. **Every v0.2 import is lazy, inside a method**, so `iwtt.recall` is never imported at module load and the canonical core has no reverse dependency on the derived layer.
+- `iwtt/store.py` — SQLite schema and constraints, canonical operations, v0.1 local search (frozen), events, import/export, backup, demo fixture, `canonical_fingerprint()`, `clear_derived_data()`, append-only relationship evidence notes in existing metadata, and the v0.2 delegate surface. v0.2 recall imports remain lazy; the canonical store has no reverse dependency on recall.
 - `iwtt/server.py` — standard-library local HTTP API and static asset server. All v0.1 routes unchanged; sixteen v0.2 routes added.
+- `iwtt/desktop.py` — desktop launcher: chooses a free loopback port, opens the browser, and defaults to `%LOCALAPPDATA%\\IWTT` on Windows.
 - `iwtt/ai.py` — `NoAIProvider` and the explicit OpenAI-compatible adapter. **Not used by recall.**
 
 ## Python package — `iwtt/recall/` (v0.2, all derived)
@@ -52,7 +54,7 @@ Line counts are for the v0.2 tree (8,416 lines in `iwtt/recall/` alone).
 - `scoring.py` (1,087) — `Candidate`, per-term tiers, the twelve signals, the fuzzy pass, state assignment, explanations, total ordering.
 - `filters.py` (727) — type/status/tag/time/demo filters, the SQL prefilter, and rejection reporting (an exclusion is always visible).
 - `expansion.py` (515) — seed selection, bounded neighbourhood expansion, provenance and relationship weights, hub penalty, relationship context.
-- `paths.py` (376) — bounded BFS path finding, `PathResult`, lineage.
+- `paths.py` (376) — bounded BFS path finding, `PathResult`, lineage, and user-authored relationship evidence notes in path context.
 - `graphview.py` (289) — the bounded, derived `GraphViewModel` with `entityType`, canonical/derived field declarations, and truncation bounds.
 - `clusters.py` (397) — connected components, synchronous label propagation, cohesion, stable cluster identity with greedy majority remapping, cluster labels.
 - `querymemory.py` (385) — derived query-outcome events, decay, corroboration, clamping, stats, history, reset.
@@ -65,11 +67,12 @@ Line counts are for the v0.2 tree (8,416 lines in `iwtt/recall/` alone).
 
 - `web/index.html` — app shell and navigation, including the v0.2 FIND MY THOUGHT, Connection Explorer and diagnostics views.
 - `web/style.css` — responsive local styling with no remote assets; keeps original text visually distinct from derived explanation.
-- `web/app.js` — capture, browsing, search, detail/history, Graveyard, graph, and data workflows, plus v0.2 recall rendering, explanation chips, breakdown panel, clustering, path finding, neighbourhoods and feedback.
+- `web/app.js` — capture, browsing, search, detail/history, Graveyard, graph, and data workflows, plus v0.2 recall rendering, explanation chips, breakdown panel, clustering, path finding, neighbourhoods and feedback; renders and appends user-authored connection notes.
 
 ## Tests (131 tests)
 
-- `tests/test_store.py` — **15 v0.1 tests, frozen and unchanged.** The canonical contract: search behaviour, immutability, revisions, lifecycle, provenance, export/import, backup integrity, derived deletion.
+- `tests/test_store.py` — **15 v0.1 tests.** The canonical contract: search behaviour, immutability, revisions, lifecycle, provenance, export/import, backup integrity, derived deletion. Assertions are preserved; SQLite handles are explicitly closed for Windows portability.
+- `tests/sqlite_helpers.py` — shared context manager that commits or rolls back and always closes test SQLite connections.
 - `tests/test_recall_engine.py` — 24 tests: signals, tiers, morphology, coverage, IDF, trigrams, fuzzy, time windows and their precision, lifecycle, states, ambiguity, honest absence, explanations, the lexical-evidence gate.
 - `tests/test_graph_intelligence.py` — 22 tests: edge authority, provenance preservation, direction, hub suppression, expansion bounds, paths, lineage, neighbourhoods, `GraphViewModel`, clusters and their stable identity.
 - `tests/test_query_memory.py` — 16 tests: weights, decay, corroboration, clamping, reset, inspection, and the guarantee that learning never touches canonical data or confirms a suggestion.
@@ -84,6 +87,8 @@ Line counts are for the v0.2 tree (8,416 lines in `iwtt/recall/` alone).
 - `scripts/verify_release_v02.py` — the v0.2 release gate: 21 checks covering derived deletion and canonical survival, rebuild with identical ranking, determinism across repeats and restart, ambiguity refusal, honest absence, provenance preservation, path honesty, query-memory boundaries, the `GraphViewModel` boundary, export/import at schema version 1, migration from a genuine v0.1 file, offline/no-AI/stdlib-only, the external-foundation manifest, and the live HTTP surface including a camelCase audit of every payload. Prints `PASS`/`FAIL` and exits non-zero on failure.
 - `scripts/benchmark_recall.py` — bounded performance check at any size, with a `--suite` mode that runs 1,000 and 10,000 thoughts and asserts sublinear scaling. Declares budgets and fails when one is exceeded.
 - `scripts/build_sample_vault.py` — builds a demonstration vault (28 thoughts, 19 relationships, one Graveyard item, tags, revisions, events) for manual inspection, with the queries that exercise each recall behaviour.
+- `scripts/launch_iwtt.py` — PyInstaller entry point for the standalone Windows executable.
+- `scripts/build_windows_app.ps1` — builds `dist/IWTT.exe` with bundled web assets; PyInstaller is a build-only dependency.
 
 ## Research
 
@@ -91,5 +96,7 @@ Line counts are for the v0.2 tree (8,416 lines in `iwtt/recall/` alone).
 
 ## Not in the repository
 
-- No `.scratch/`, no caches, no databases, no backups, no sample vaults, no private data, no API keys. Development scratch files were audited and moved out of the tree before the v0.2 completion commit.
-- No third-party packages, no `node_modules`, no lockfiles, no build output.
+- No `.scratch/`, runtime databases, backups, sample vaults, private data, or API keys are included in source. Development scratch files were audited and moved out of the tree before the v0.2 completion commit.
+- Runtime dependencies remain Python standard library only. PyInstaller is needed only on the build machine; generated executable/build output is kept out of the source inventory.
+
+- Local file import reads selected text formats in the browser, previews them, then creates an imported thought while preserving the text as its original capture. The graph view adds ephemeral concept keywords and dashed shared-concept hints; neither is stored as canonical data.

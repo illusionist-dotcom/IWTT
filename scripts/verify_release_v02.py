@@ -34,6 +34,7 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import closing
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -222,7 +223,7 @@ def main() -> int:
             "recallTablesDeleted": len(deleted["recallTablesDeleted"]),
             "recallRowsDeleted": deleted["recallRowsDeleted"],
         })
-        with sqlite3.connect(live) as conn:
+        with closing(sqlite3.connect(live)) as conn:
             leftover = {
                 table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                 for table in sorted(RECALL_DERIVED_TABLES)
@@ -394,7 +395,7 @@ def main() -> int:
         v01_path = root / "migrated" / "thought-vault.sqlite3"
         v01_path.parent.mkdir(parents=True, exist_ok=True)
         expected = v01_vault(v01_path)
-        with sqlite3.connect(v01_path) as conn:
+        with closing(sqlite3.connect(v01_path)) as conn:
             tables_before = {
                 row[0] for row in conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'"

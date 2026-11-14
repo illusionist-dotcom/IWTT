@@ -50,6 +50,7 @@ from iwtt.recall.index import (
     RECALL_PER_THOUGHT_TABLES,
 )
 from iwtt.store import Vault
+from sqlite_helpers import connect_sqlite
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RECALL_DIR = REPO_ROOT / "iwtt" / "recall"
@@ -212,7 +213,7 @@ class StorageBoundaryTestCase(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_the_canonical_schema_is_unchanged_from_v01(self) -> None:
-        with sqlite3.connect(self.path) as conn:
+        with connect_sqlite(self.path) as conn:
             for table, expected in CANONICAL_COLUMNS.items():
                 self.assertEqual(columns(conn, table), expected, f"{table} drifted")
             for table, expected in V01_DERIVED_COLUMNS.items():
@@ -229,7 +230,7 @@ class StorageBoundaryTestCase(unittest.TestCase):
             self.assertIn("preserve_original_thought_text", triggers)
 
     def test_every_table_is_either_canonical_or_known_derived(self) -> None:
-        with sqlite3.connect(self.path) as conn:
+        with connect_sqlite(self.path) as conn:
             tables = set(all_tables(conn))
         expected_derived = V01_DERIVED_TABLES | set(RECALL_DERIVED_TABLES)
         self.assertEqual(
@@ -246,7 +247,7 @@ class StorageBoundaryTestCase(unittest.TestCase):
         self.assertTrue(versions["recallSchemaVersion"])
 
     def test_no_canonical_table_gains_a_derived_column(self) -> None:
-        with sqlite3.connect(self.path) as conn:
+        with connect_sqlite(self.path) as conn:
             for table in sorted(CANONICAL_TABLES):
                 present = set(columns(conn, table))
                 self.assertFalse(
@@ -261,7 +262,7 @@ class StorageBoundaryTestCase(unittest.TestCase):
         ``thought_id REFERENCES thoughts(id) ON DELETE CASCADE``.
         """
         self.assertTrue(RECALL_PER_THOUGHT_TABLES)
-        with sqlite3.connect(self.path) as conn:
+        with connect_sqlite(self.path) as conn:
             for table in sorted(RECALL_PER_THOUGHT_TABLES):
                 with self.subTest(table=table):
                     foreign_keys = list(conn.execute(f"PRAGMA foreign_key_list({table})"))
@@ -292,7 +293,7 @@ class StorageBoundaryTestCase(unittest.TestCase):
             set(RECALL_PER_THOUGHT_TABLES) | set(RECALL_GLOBAL_TABLES),
             "the two groups must partition the derived layer exactly",
         )
-        with sqlite3.connect(self.path) as conn:
+        with connect_sqlite(self.path) as conn:
             for table in sorted(RECALL_GLOBAL_TABLES):
                 with self.subTest(table=table):
                     self.assertNotIn("thought_id", columns(conn, table),
@@ -311,7 +312,7 @@ class StorageBoundaryTestCase(unittest.TestCase):
         )
         self.assertGreater(report["recallRowsDeleted"], 0)
         self.assertEqual(report["canonicalTablesTouched"], [])
-        with sqlite3.connect(self.path) as conn:
+        with connect_sqlite(self.path) as conn:
             for table in sorted(RECALL_DERIVED_TABLES):
                 self.assertEqual(
                     conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0,
@@ -321,7 +322,7 @@ class StorageBoundaryTestCase(unittest.TestCase):
         # (d) recomputed from canonical data: the corpus statistics come back,
         # and they come back describing only what still exists
         self.vault.rebuild_recall_indexes(full=True)
-        with sqlite3.connect(self.path) as conn:
+        with connect_sqlite(self.path) as conn:
             stats = {
                 row[0]: row[1] for row in conn.execute("SELECT term, df FROM recall_term_stats")
             }
@@ -351,7 +352,7 @@ class StorageBoundaryTestCase(unittest.TestCase):
             conn.close()
 
     def _derived_rows_for(self, thought_id: str) -> dict[str, int]:
-        with sqlite3.connect(self.path) as conn:
+        with connect_sqlite(self.path) as conn:
             return {
                 table: conn.execute(
                     f"SELECT COUNT(*) FROM {table} WHERE thought_id=?", (thought_id,)
@@ -402,7 +403,7 @@ class StorageBoundaryTestCase(unittest.TestCase):
             "THOUGHT", "Unique words",
         )
         self.vault.rebuild_recall_indexes(full=True)
-        with sqlite3.connect(self.path) as conn:
+        with connect_sqlite(self.path) as conn:
             self.assertEqual(
                 conn.execute(
                     "SELECT df FROM recall_term_stats WHERE term='xylophone'"
@@ -419,14 +420,14 @@ class StorageBoundaryTestCase(unittest.TestCase):
         self.vault.rebuild_recall_indexes(full=True)
 
         def df(term: str) -> int | None:
-            with sqlite3.connect(self.path) as conn:
+            with connect_sqlite(self.path) as conn:
                 row = conn.execute(
                     "SELECT df FROM recall_term_stats WHERE term=?", (term,)
                 ).fetchone()
             return None if row is None else int(row[0])
 
         def orphans() -> int:
-            with sqlite3.connect(self.path) as conn:
+            with connect_sqlite(self.path) as conn:
                 return int(conn.execute(
                     "SELECT COUNT(*) FROM recall_term_stats ts "
                     "LEFT JOIN (SELECT DISTINCT token FROM recall_tokens) t ON t.token = ts.term "
@@ -474,7 +475,7 @@ class StorageBoundaryTestCase(unittest.TestCase):
         """
         distinctive = "utterly distinctive zebra quartz"
         self.assertIn(distinctive, self.thought["originalText"])
-        with sqlite3.connect(self.path) as conn:
+        with connect_sqlite(self.path) as conn:
             for table in sorted(RECALL_DERIVED_TABLES):
                 text_columns = [
                     name for name in columns(conn, table)
@@ -491,28 +492,29 @@ class StorageBoundaryTestCase(unittest.TestCase):
                                          f"{table}.{column} holds the original text")
 
     def test_tokens_are_stored_not_sentences(self) -> None:
-        with sqlite3.connect(self.path) as conn:
+        with connect_sqlite(self.path) as conn:
             tokens = [
                 row[0] for row in conn.execute(
                     "SELECT token FROM recall_tokens WHERE thought_id=?", (self.thought["id"],)
                 )
             ]
+            fields = {
+                row[0] for row in conn.execute(
+                    "SELECT DISTINCT field FROM recall_tokens WHERE thought_id=?",
+                    (self.thought["id"],),
+                )
+            }
         self.assertTrue(tokens)
         self.assertTrue(all(" " not in token for token in tokens), "a token is a word, not a phrase")
         self.assertTrue(all(token == token.casefold() for token in tokens), "tokens are normalized")
         self.assertIn("zebra", tokens)
         self.assertIn("combat", tokens)
-        fields = {
-            row[0] for row in conn.execute(
-                "SELECT DISTINCT field FROM recall_tokens WHERE thought_id=?", (self.thought["id"],)
-            )
-        }
         self.assertEqual(fields, {"title", "body", "tag"})
 
 
 class ModuleBoundaryTestCase(unittest.TestCase):
     def parse(self, path: Path) -> ast.Module:
-        return ast.parse(path.read_text(), filename=str(path))
+        return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
     def imported_names(self, tree: ast.Module, *, top_level_only: bool) -> set[str]:
         names: set[str] = set()
@@ -564,7 +566,7 @@ class ModuleBoundaryTestCase(unittest.TestCase):
         )
         for path in sorted(RECALL_DIR.glob("*.py")):
             with self.subTest(module=path.name):
-                source = path.read_text()
+                source = path.read_text(encoding="utf-8")
                 self.assertIsNone(
                     pattern.search(source),
                     f"{path.name} contains a write to a canonical table: {pattern.search(source)}",
@@ -614,7 +616,7 @@ class ModuleBoundaryTestCase(unittest.TestCase):
                 checked += 1
         self.assertGreaterEqual(checked, 18, "every runtime module must be classified")
 
-        requirements = (REPO_ROOT / "requirements.txt").read_text().lower()
+        requirements = (REPO_ROOT / "requirements.txt").read_text(encoding="utf-8").lower()
         for name in FORBIDDEN_PACKAGES:
             self.assertNotIn(name, requirements,
                              f"requirements.txt must stay empty of {name}")
@@ -914,12 +916,12 @@ class ExternalEntityBoundaryTestCase(unittest.TestCase):
         )
         for path in sorted((REPO_ROOT / "iwtt").rglob("*.py")):
             with self.subTest(module=str(path.relative_to(REPO_ROOT))):
-                source = path.read_text()
+                source = path.read_text(encoding="utf-8")
                 match = forbidden.search(source)
                 self.assertIsNone(match, f"{path} contains {match.group(0) if match else ''}")
 
     def _tables(self) -> list[str]:
-        with sqlite3.connect(self.path) as conn:
+        with connect_sqlite(self.path) as conn:
             return all_tables(conn)
 
 

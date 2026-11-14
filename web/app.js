@@ -2,7 +2,7 @@
 (() => {
   const app = document.getElementById('app-view');
   const state = {
-    view: 'capture',
+    view: 'connections',
     parentView: 'vault',
     thoughtId: null,
     query: '',
@@ -24,10 +24,17 @@
       breakdown: null,
     },
     // v0.2 — Connection Explorer V2
-    graph: { rootId: null, sourceId: '', targetId: '', path: null, neighbourhood: null, depth: 1 },
+    graph: { rootId: null, sourceId: '', targetId: '', path: null, neighbourhood: null, depth: 1, selectedId: null },
+    aiConnections: { loadingFor: null, result: null },
+    importedFile: { name: '', text: '', error: '' },
+    captureDraft: null,
+    vaultSourceType: 'ALL',
+    graphCommunity: 'ALL',
   };
 
   const TYPE_NAMES = { THOUGHT: 'Thought', EXPERIMENT: 'Experiment', INVENTION: 'Invention', PROJECT: 'Project' };
+  const SOURCE_NAMES = { THOUGHT: 'My thought', IDEA: 'Idea', MESSAGE: 'Message', PROMPT: 'Prompt', IMPORTED: 'Imported', AI_INTERPRETATION: 'AI interpretation' };
+  const COMMUNITY_COLORS = ['#a78bfa', '#55d6be', '#f0abfc', '#d4af37', '#fb7185', '#7dd3fc', '#c4b5fd', '#67e8f9'];
   const RELATION_TYPES = ['INSPIRED_BY', 'LED_TO', 'RELATED_TO', 'CONTRADICTS', 'SUPPORTS', 'DEPENDS_ON', 'PART_OF', 'SUPERSEDES', 'REVIVES', 'TESTS', 'IMPLEMENTED_BY'];
 
   const esc = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -45,10 +52,16 @@
   };
   const typeClass = type => String(type || 'THOUGHT').toLowerCase();
   const typePill = type => `<span class="type-pill ${typeClass(type)}">${esc(TYPE_NAMES[type] || type || 'Thought')}</span>`;
+  const sourcePill = source => `<span class="source-pill source-${String(source || 'THOUGHT').toLowerCase()}">${esc(SOURCE_NAMES[source] || SOURCE_NAMES.THOUGHT)}</span>`;
   const statusPill = status => `<span class="status-pill ${String(status).toLowerCase()}">${esc(status === 'GRAVEYARD' ? 'Graveyard' : 'Active')}</span>`;
   const demoPill = isDemo => isDemo ? '<span class="demo-pill">Demo</span>' : '';
   const tagPills = tags => (tags || []).map(tag => `<span class="tag-chip">${esc(tag.name)}</span>`).join('');
   const titleOf = thought => thought?.displayTitle || thought?.title || words(thought?.currentText || thought?.originalText, 70) || 'Untitled thought';
+  const communityColor = id => {
+    let hash = 2166136261;
+    for (const char of String(id || 'unlinked')) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+    return COMMUNITY_COLORS[(hash >>> 0) % COMMUNITY_COLORS.length];
+  };
 
   async function api(path, options = {}) {
     const headers = { ...(options.headers || {}) };
@@ -73,6 +86,9 @@
     const LABELS = { data: 'DATA & PRIVACY', recall: 'FIND MY THOUGHT', clusters: 'DERIVED CLUSTERS', connections: 'CONNECTION EXPLORER' };
     const label = state.view === 'detail' ? 'THOUGHT DETAIL' : (LABELS[state.view] || state.view.toUpperCase());
     document.getElementById('topbar-label').textContent = label;
+    document.body.dataset.view = state.view;
+    const globalSearch = document.getElementById('global-search-input');
+    if (globalSearch) globalSearch.placeholder = state.view === 'connections' ? 'Jump to concept...' : 'Find my thought from a fragment…';
     const activeView = state.view === 'detail' ? state.parentView : state.view;
     document.querySelectorAll('.nav-item[data-view]').forEach(button => {
       button.classList.toggle('active', button.dataset.view === activeView);
@@ -121,6 +137,7 @@
         case 'connections': markup = await renderConnections(); break;
         case 'recall': markup = await renderRecall(); break;
         case 'clusters': markup = await renderClusters(); break;
+        case 'import': markup = renderFileImport(); break;
         case 'data': markup = await renderData(); break;
         case 'detail': markup = await renderDetail(); break;
         default: state.view = 'capture'; markup = await renderCapture();
@@ -154,6 +171,7 @@
   }
 
   async function renderCapture() {
+    const draft = state.captureDraft || {};
     const [{ data: stats }, { data: list }] = await Promise.all([
       api('/api/stats'), api('/api/thoughts?status=ACTIVE')
     ]);
@@ -166,9 +184,11 @@
         <section class="capture-card">
           <div class="capture-card-head"><div><span class="eyebrow">QUICK CAPTURE</span><h2>What’s on your mind?</h2><p>A fragment is enough. Your first words are preserved.</p></div><span class="pencil-mark" aria-hidden="true">✳</span></div>
           <form id="capture-form" class="capture-form">
-            <textarea id="capture-text" name="originalText" class="capture-compose" maxlength="200000" required placeholder="Could game enemies remember how the player fights and change their strategy later?\n\nWrite freely. You can organize it when you’re ready."></textarea>
-            <details class="capture-options"><summary>Optional: add a title, type, or tags</summary><div class="optional-fields">
-              <div class="field"><label for="capture-title">Title</label><input id="capture-title" name="title" maxlength="200" placeholder="A short name (optional)"></div>
+            ${draft.sourceType === 'AI_INTERPRETATION' ? `<div class="interpretation-review"><strong>AI-generated draft</strong><span>Review and edit this before saving. Your choice will be recorded as an AI interpretation source.</span></div>` : ''}
+            <label class="capture-origin-control" for="capture-source-type"><span>Capture source</span><select id="capture-source-type" name="sourceType">${Object.entries(SOURCE_NAMES).filter(([kind]) => kind !== 'IMPORTED').map(([kind, label]) => `<option value="${kind}" ${draft.sourceType === kind ? 'selected' : kind === 'THOUGHT' && !draft.sourceType ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></label>
+            <textarea id="capture-text" name="originalText" class="capture-compose" maxlength="200000" required placeholder="Could game enemies remember how the player fights and change their strategy later?\n\nWrite freely. You can organize it when you’re ready.">${esc(draft.text || '')}</textarea>
+            <details class="capture-options"><summary>Optional: add a title, lifecycle, or tags</summary><div class="optional-fields">
+              <div class="field"><label for="capture-title">Title</label><input id="capture-title" name="title" maxlength="200" value="${attr(draft.title || '')}" placeholder="A short name (optional)"></div>
               <div class="field"><label for="capture-type">Starting type</label><select id="capture-type" name="type"><option value="THOUGHT">Thought</option><option value="EXPERIMENT">Experiment</option><option value="INVENTION">Invention</option><option value="PROJECT">Project</option></select></div>
               <div class="field" style="grid-column:1/-1"><label for="capture-tags">Tags · comma-separated</label><input id="capture-tags" name="tags" maxlength="300" placeholder="gameplay, memory"></div>
             </div></details>
@@ -192,7 +212,7 @@
 
   function thoughtCard(t) {
     return `<article class="thought-card" data-open-thought="${attr(t.id)}" tabindex="0" role="button" aria-label="Open ${attr(titleOf(t))}">
-      <div class="thought-card-top">${typePill(t.type)}${demoPill(t.isDemo)}</div>
+      <div class="thought-card-top">${typePill(t.type)}${sourcePill(t.sourceType)}${demoPill(t.isDemo)}</div>
       <h3>${esc(titleOf(t))}</h3><p>${esc(words(t.originalText, 175))}</p>
       <div class="thought-card-bottom"><div class="tag-list">${tagPills((t.tags || []).slice(0, 3))}</div><span class="thought-date">${esc(date(t.updatedAt))}</span></div>
     </article>`;
@@ -204,17 +224,18 @@
 
   async function renderVault() {
     const typeParam = state.vaultType === 'ALL' ? '' : `&type=${encodeURIComponent(state.vaultType)}`;
-    const { data } = await api(`/api/thoughts?status=ACTIVE${typeParam}`);
+    const sourceParam = state.vaultSourceType === 'ALL' ? '' : `&source_type=${encodeURIComponent(state.vaultSourceType)}`;
+    const { data } = await api(`/api/thoughts?status=ACTIVE${typeParam}${sourceParam}`);
     const types = ['ALL', 'THOUGHT', 'EXPERIMENT', 'INVENTION', 'PROJECT'];
     return `<section class="view-heading"><div><span class="eyebrow">THE ACTIVE VAULT</span><h1>Thoughts with room to grow.</h1><p>Browse the original captures, evolving experiments, inventions, and projects.</p></div><div class="heading-actions"><button class="button primary" data-view="capture">＋ Capture</button></div></section>
-      <div class="view-filters">${types.map(type => `<button class="filter-chip ${state.vaultType === type ? 'active' : ''}" data-action="vault-type" data-type="${type}">${type === 'ALL' ? 'All types' : esc(TYPE_NAMES[type])}</button>`).join('')}</div>
+      <div class="view-filters">${types.map(type => `<button class="filter-chip ${state.vaultType === type ? 'active' : ''}" data-action="vault-type" data-type="${type}">${type === 'ALL' ? 'All types' : esc(TYPE_NAMES[type])}</button>`).join('')}<select class="filter-select" aria-label="Filter by source" data-action="vault-source-type">${[['ALL','All sources'], ...Object.entries(SOURCE_NAMES)].map(([kind,label]) => `<option value="${kind}" ${state.vaultSourceType === kind ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></div>
       ${data.thoughts.length ? `<div class="list-stack">${data.thoughts.map(listThought).join('')}</div>` : emptyState('Nothing in this view yet', state.vaultType === 'ALL' ? 'Capture a thought without deciding what it has to become.' : `No ${TYPE_NAMES[state.vaultType]?.toLowerCase() || 'items'} yet. You can change a thought’s type at any time.`, 'Capture a thought', 'capture')}`;
   }
 
   function listThought(t, options = {}) {
     const snippet = options.snippet || t.originalText;
     return `<article class="list-thought" data-open-thought="${attr(t.id)}" tabindex="0" role="button" aria-label="Open ${attr(titleOf(t))}">
-      <div><div class="list-meta">${typePill(t.type)}${statusPill(t.status)}${demoPill(t.isDemo)}</div><h3>${esc(titleOf(t))}</h3><p>${esc(words(snippet, 235))}</p><div class="tag-list" style="margin-top:9px">${tagPills((t.tags || []).slice(0, 6))}</div></div>
+      <div><div class="list-meta">${typePill(t.type)}${sourcePill(t.sourceType)}${statusPill(t.status)}${demoPill(t.isDemo)}</div><h3>${esc(titleOf(t))}</h3><p>${esc(words(snippet, 235))}</p><div class="tag-list" style="margin-top:9px">${tagPills((t.tags || []).slice(0, 6))}</div></div>
       <div class="list-right"><span class="thought-date">Updated ${esc(date(t.updatedAt))}</span>${options.showResurrect ? `<button class="button small" data-action="resurrect" data-id="${attr(t.id)}">Resurrect ↗</button>` : `<span class="thought-date">${t.relationshipCount ? `${t.relationshipCount} connection${t.relationshipCount === 1 ? '' : 's'}` : 'No connections yet'}</span>`}</div>
     </article>`;
   }
@@ -568,6 +589,7 @@
           </span>
           <button class="connection-target" data-open-thought="${attr(to.id)}">${esc(to.displayTitle || to.id || '')}</button>
           <span class="micro">${esc(edge.display || '')}${edge.symmetric ? ' · symmetric' : ' · directional'}</span>
+          ${(edge.evidenceNotes || []).map(note => `<small class="path-evidence-note">User note: ${esc(note.text || '')}</small>`).join('')}
         </li>`;
     }).join('');
     return `<div class="recall-banner strong"><strong>${esc(path.narrative || 'Path found')}</strong>
@@ -666,6 +688,9 @@
 
   function eventSummary(event) {
     const m = event.metadata || {};
+    if (event.eventType === 'THOUGHT_CREATED' && m.captureSource?.kind === 'FILE_IMPORT') {
+      return `Imported file captured Â· ${m.captureSource.fileName || 'source file'}`;
+    }
     const labels = {
       THOUGHT_CREATED: 'Thought captured',
       THOUGHT_EDITED: 'A new revision was preserved',
@@ -678,9 +703,62 @@
       RELATIONSHIP_CREATED: `Connection created · ${m.relationshipType || 'RELATED_TO'}`,
       RELATIONSHIP_CONFIRMED: 'Suggested connection confirmed by you',
       RELATIONSHIP_REMOVED: 'Connection removed · history retained',
+      RELATIONSHIP_EVIDENCE_NOTE_ADDED: 'User-authored evidence note added to a connection',
       AI_SUMMARY_GENERATED: 'AI summary generated · derived data',
     };
     return labels[event.eventType] || String(event.eventType || 'Event').replaceAll('_', ' ').toLowerCase();
+  }
+
+  function renderAIConnectionsPanel(thoughtId, aiAvailable, compact = false) {
+    const loading = state.aiConnections.loadingFor === thoughtId;
+    const result = state.aiConnections.result?.thoughtId === thoughtId ? state.aiConnections.result : null;
+    const results = result?.suggestions?.length ? `<div class="ai-connection-results">${result.suggestions.map((item, index) => `<article class="ai-connection-result"><div><strong>${esc(item.type.replaceAll('_', ' '))} <span>→</span> ${esc(item.targetTitle)}</strong><small>${esc(SOURCE_NAMES[item.targetSourceType] || 'Thought')} · ${item.targetStatus === 'GRAVEYARD' ? 'Graveyard' : 'Active'} · AI suggested</small><p>${esc(item.reason)}</p></div><button class="button small ${item.saved ? '' : 'primary'}" type="button" data-action="save-ai-relationship" data-id="${attr(thoughtId)}" data-index="${index}" ${item.saved ? 'disabled' : ''}>${item.saved ? 'Proposal saved' : 'Save proposal'}</button></article>`).join('')}</div>` : '';
+    const stateMessage = loading
+      ? '<p class="ai-connection-status">Comparing this thought with local candidates…</p>'
+      : result?.error
+        ? `<p class="ai-connection-status error">${esc(result.error)}</p>`
+        : result && !result.suggestions?.length
+          ? `<p class="ai-connection-status">No likely link found among ${result.examinedCount} candidate thoughts. This is a screening result, not proof that no connection exists.</p>`
+          : result
+            ? `<p class="ai-connection-status">${result.suggestions.length} possible link${result.suggestions.length === 1 ? '' : 's'} found among ${result.examinedCount} candidates · ${esc(result.provider)}${result.model ? ` · ${esc(result.model)}` : ''}. Nothing is saved until you choose Save proposal.</p>`
+            : '';
+    return `<section class="ai-connection-panel ${compact ? 'compact' : ''}"><div class="ai-connection-heading"><div><span class="eyebrow">AI · REVIEWABLE SUGGESTIONS</span><strong>Find possible links</strong></div>${aiAvailable ? `<button class="button ${compact ? 'small' : ''}" type="button" data-action="ai-find-connections" data-id="${attr(thoughtId)}" ${loading ? 'disabled' : ''}>${loading ? 'Checking…' : result ? 'Check again' : 'Check connections'}</button>` : '<button class="button small" type="button" data-view="data">Configure provider</button>'}</div><p class="ai-connection-privacy">When requested, IWTT sends this thought and up to 12 locally selected candidates to your configured provider. The original captures remain unchanged.</p>${stateMessage}${results}</section>`;
+  }
+
+  async function findAIConnections(thoughtId) {
+    state.aiConnections.loadingFor = thoughtId;
+    state.aiConnections.result = null;
+    await render();
+    try {
+      const { data } = await api(`/api/thoughts/${encodeURIComponent(thoughtId)}/ai/relationships`, { method: 'POST', body: {} });
+      state.aiConnections.result = { thoughtId, ...data };
+    } catch (error) {
+      state.aiConnections.result = { thoughtId, error: error.message, suggestions: [], examinedCount: 0 };
+    } finally {
+      state.aiConnections.loadingFor = null;
+      await render();
+    }
+  }
+
+  async function saveAIConnectionSuggestion(button) {
+    const index = Number(button.dataset.index);
+    const result = state.aiConnections.result;
+    const suggestion = result?.thoughtId === button.dataset.id ? result.suggestions?.[index] : null;
+    if (!suggestion || suggestion.saved) return;
+    button.disabled = true;
+    try {
+      await api('/api/relationships', { method: 'POST', body: {
+        sourceId: result.thoughtId, targetId: suggestion.targetId,
+        type: suggestion.type, provenance: 'AI_SUGGESTED',
+        metadata: { note: suggestion.reason, aiProvider: result.provider, aiModel: result.model || null },
+      } });
+      suggestion.saved = true;
+      toast('Saved as an unconfirmed AI proposal. Review it before confirming.');
+      await render();
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message, 'error');
+    }
   }
 
   async function renderDetail() {
@@ -694,32 +772,42 @@
     const revisions = [...(t.revisions || [])].sort((a, b) => b.revisionNumber - a.revisionNumber);
     const otherThoughts = (await api('/api/thoughts?status=ALL')).data.thoughts.filter(item => item.id !== t.id);
     const relationOptions = otherThoughts.map(item => `<option value="${attr(item.id)}">${esc(titleOf(item))} · ${esc(TYPE_NAMES[item.type] || item.type)}</option>`).join('');
+    const relationshipEvidenceMarkup = relationship => {
+      const notes = Array.isArray(relationship.metadata?.evidenceNotes) ? relationship.metadata.evidenceNotes : [];
+      const existing = relationship.metadata?.note
+        ? `<div class="connection-evidence-note"><small>Connection note</small><p>${esc(relationship.metadata.note)}</p></div>` : '';
+      const noteList = notes.map(note => `<div class="connection-evidence-note"><small>User-authored note · ${esc(date(note.createdAt, true))}</small><p>${esc(note.text || '')}</p></div>`).join('');
+      const addForm = relationship.status !== 'REMOVED'
+        ? `<form class="relationship-evidence-form" data-relationship-id="${attr(relationship.id)}"><textarea name="text" maxlength="2000" rows="2" placeholder="Add why you made this connection…" required></textarea><button class="button ghost small" type="submit">＋ Add evidence note</button></form>` : '';
+      return `<div class="connection-evidence"><div class="connection-evidence-heading">Connection context · user-authored</div>${existing}${noteList || '<small class="connection-sub">No evidence notes yet. Add your reason or supporting context.</small>'}${addForm}</div>`;
+    };
     const relationshipRows = connections.length ? connections.map(r => {
       const other = r.sourceId === t.id ? r.target : r.source;
       const isSuggested = r.status === 'SUGGESTED';
       const provenance = isSuggested ? 'AI suggestion · unconfirmed' : r.provenance === 'AI_SUGGESTED' ? 'AI-suggested · confirmed by you' : 'User-confirmed';
-      return `<div class="connection-row"><div class="connection-row-main"><div><button class="connection-target" data-open-thought="${attr(other?.id || '')}">${esc(other?.title || 'Missing thought')}</button><div class="connection-sub">${esc(r.type.replaceAll('_', ' '))} · ${esc(provenance)}${r.status === 'REMOVED' ? ' · removed' : ''}</div></div>${r.status === 'REMOVED' ? '<span class="status-pill graveyard">Removed</span>' : `<span class="provenance-pill ${isSuggested ? 'suggested' : 'confirmed'}">${isSuggested ? 'Proposed' : 'Confirmed'}</span>`}</div>${r.metadata?.note ? `<small class="connection-sub">${esc(r.metadata.note)}</small>` : ''}${r.status !== 'REMOVED' ? `<div class="connection-row-actions"><small>${esc(date(r.createdAt))}</small><span>${isSuggested ? `<button class="button small" data-action="confirm-relationship" data-id="${attr(r.id)}">Confirm</button>` : ''} <button class="button ghost small" data-action="remove-relationship" data-id="${attr(r.id)}">Remove</button></span></div>` : ''}</div>`;
+      return `<div class="connection-row"><div class="connection-row-main"><div><button class="connection-target" data-open-thought="${attr(other?.id || '')}">${esc(other?.title || 'Missing thought')}</button><div class="connection-sub">${esc(r.type.replaceAll('_', ' '))} · ${esc(provenance)}${r.status === 'REMOVED' ? ' · removed' : ''}</div></div>${r.status === 'REMOVED' ? '<span class="status-pill graveyard">Removed</span>' : `<span class="provenance-pill ${isSuggested ? 'suggested' : 'confirmed'}">${isSuggested ? 'Proposed' : 'Confirmed'}</span>`}</div>${relationshipEvidenceMarkup(r)}${r.status !== 'REMOVED' ? `<div class="connection-row-actions"><small>${esc(date(r.createdAt))}</small><span>${isSuggested ? `<button class="button small" data-action="confirm-relationship" data-id="${attr(r.id)}">Confirm</button>` : ''} <button class="button ghost small" data-action="remove-relationship" data-id="${attr(r.id)}">Remove</button></span></div>` : ''}</div>`;
     }).join('') : '<div class="empty-state" style="padding:18px"><h3>No connections yet</h3><p>Connect this thought to another when a relationship becomes useful.</p></div>';
     const artifacts = t.derivedArtifacts || [];
-    const derivedContent = artifacts.length ? artifacts.map(a => `<div class="revision-card"><span class="derived-mark">AI-generated · ${esc(a.artifactType.replaceAll('_', ' '))}</span><p class="derived-summary">${esc(a.payload?.summary || JSON.stringify(a.payload))}</p><div class="derived-meta">${esc(a.provider)}${a.model ? ` · ${esc(a.model)}` : ''} · ${esc(date(a.generatedAt, true))} · Sources: ${(a.sourceThoughtIds || []).length} thought</div></div>`).join('') : `<p class="derived-empty">${ai.available ? 'No derived summary yet. If you ask, the configured provider receives this thought and its original capture.' : 'No AI is configured. IWTT still works fully; your thought stays local and no AI service is contacted.'}</p>`;
+    const derivedContent = artifacts.length ? artifacts.map(a => '<div class="revision-card"><span class="derived-mark">AI-generated &middot; ' + esc(a.artifactType.replaceAll('_', ' ')) + '</span><p class="derived-summary">' + esc(a.payload?.summary || JSON.stringify(a.payload)) + '</p>' + (a.artifactType === 'AI_INTERPRETATION' ? '<div class="interpretation-columns">' + [['Concepts',a.payload?.concepts],['Open questions',a.payload?.openQuestions],['Possible next steps',a.payload?.possibleNextSteps]].map(([label,items]) => items?.length ? '<section><strong>' + esc(label) + '</strong><ul>' + items.map(item => '<li>' + esc(item) + '</li>').join('') + '</ul></section>' : '').join('') + '</div><button class="button small" data-action="capture-ai-interpretation" data-id="' + attr(t.id) + '">Use as an editable idea draft</button>' + (a.payload?.sourceTruncated ? '<small class="revision-note">Source exceeded the AI input limit; interpretation used a bounded excerpt.</small>' : '') : '') + '<div class="derived-meta">' + esc(a.provider) + (a.model ? ' &middot; ' + esc(a.model) : '') + ' &middot; ' + esc(date(a.generatedAt, true)) + ' &middot; Sources: ' + (a.sourceThoughtIds || []).length + ' thought</div></div>').join('') : '<p class="derived-empty">' + (ai.available ? 'No interpretation yet. The provider receives this thought only when you request interpretation.' : 'No AI is configured. IWTT still works fully; your thought stays local and no AI service is contacted.') + '</p>';
     const graveyardAction = t.status === 'GRAVEYARD'
       ? `<button class="button primary" data-action="resurrect" data-id="${attr(t.id)}">Resurrect</button>`
       : `<button class="button" data-action="graveyard" data-id="${attr(t.id)}">Move to Graveyard</button>`;
     return `<button class="detail-back" data-action="back-to-parent">← Back to ${esc(state.parentView === 'search' ? 'search' : state.parentView)}</button>
-      <section class="detail-head"><div><span class="eyebrow">${t.isDemo ? 'FICTIONAL DEMO RECORD' : 'THOUGHT VAULT · ORIGINAL PRESERVED'}</span><h1>${esc(titleOf(t))}</h1><div class="detail-meta">${typePill(t.type)}${statusPill(t.status)}${demoPill(t.isDemo)}<span>Captured ${esc(date(t.createdAt))}</span><span>·</span><span>Updated ${esc(date(t.updatedAt))}</span></div></div><div class="detail-actions">${graveyardAction}</div></section>
+      <section class="detail-head"><div><span class="eyebrow">${t.isDemo ? 'FICTIONAL DEMO RECORD' : 'THOUGHT VAULT · ORIGINAL PRESERVED'}</span><h1>${esc(titleOf(t))}</h1><div class="detail-meta">${typePill(t.type)}${sourcePill(t.sourceType)}${statusPill(t.status)}${demoPill(t.isDemo)}<span>Captured ${esc(date(t.createdAt))}</span><span>·</span><span>Updated ${esc(date(t.updatedAt))}</span></div></div><div class="detail-actions">${graveyardAction}</div></section>
       <div class="detail-grid"><div class="detail-main-col">
         <section class="panel"><div class="panel-head"><div><span class="canonical-label">What I actually wrote</span><h2 style="margin-top:8px">Original capture</h2><p>This text is immutable and remains separate from later edits.</p></div></div><blockquote class="original-quote">${esc(t.originalText)}</blockquote><div class="original-caption">Captured ${esc(date(t.createdAt, true))} · ID ${esc(t.id)}</div></section>
         <section class="panel"><div class="panel-head"><div><span class="eyebrow">CANONICAL · USER-EDITABLE</span><h2 style="margin-top:6px">Current version</h2><p>Saving edits creates a new revision; it never changes the original capture.</p></div></div>
           <form id="thought-edit-form" class="edit-form"><div class="field"><label for="detail-title">Title</label><input id="detail-title" name="title" maxlength="200" value="${attr(t.title)}" placeholder="Optional title"></div><div class="field"><label for="detail-text">Current text</label><textarea id="detail-text" name="currentText" required>${esc(t.currentText)}</textarea></div><div class="field"><label for="detail-type">Lifecycle type</label><select id="detail-type" name="type">${Object.entries(TYPE_NAMES).map(([key, label]) => `<option value="${key}" ${t.type === key ? 'selected' : ''}>${label}</option>`).join('')}</select></div><div class="edit-actions"><span class="revision-note">${revisions.length} preserved version${revisions.length === 1 ? '' : 's'}</span><button class="button primary" type="submit">Save version</button></div></form>
         </section>
         <section class="panel"><div class="panel-head"><div><span class="eyebrow">TIME ARCHAEOLOGY</span><h2 style="margin-top:6px">History & revisions</h2><p>How this idea reached its current state.</p></div></div>
-          <div class="history-list">${history.map(e => `<div class="history-item"><div class="history-rail"><span class="history-dot"></span></div><div class="history-content"><div class="history-title">${esc(eventSummary(e))}${e.isDemo ? '<span class="demo-ribbon">Demo</span>' : ''}<small>${esc(date(e.timestamp, true))}</small></div>${e.targetType === 'RELATIONSHIP' && e.metadata?.relationshipType ? `<div class="history-detail">${esc(e.metadata.relationshipType.replaceAll('_', ' '))} · ${esc(e.metadata.provenance || '')}${e.metadata.status ? ` · ${esc(e.metadata.status)}` : ''}</div>` : ''}</div></div>`).join('')}</div>
+          <div class="history-list">${history.map(e => `<div class="history-item"><div class="history-rail"><span class="history-dot"></span></div><div class="history-content"><div class="history-title">${esc(eventSummary(e))}${e.isDemo ? '<span class="demo-ribbon">Demo</span>' : ''}<small>${esc(date(e.timestamp, true))}</small></div>${e.targetType === 'RELATIONSHIP' && e.metadata?.relationshipType ? `<div class="history-detail">${esc(e.metadata.relationshipType.replaceAll('_', ' '))} · ${esc(e.metadata.provenance || '')}${e.metadata.status ? ` · ${esc(e.metadata.status)}` : ''}</div>` : ''}${e.eventType === 'RELATIONSHIP_EVIDENCE_NOTE_ADDED' && e.metadata?.text ? `<div class="history-detail">User note: ${esc(e.metadata.text)}</div>` : ''}</div></div>`).join('')}</div>
           <div class="section-head" style="margin:20px 0 9px"><h2 style="font-size:16px">Saved snapshots</h2></div><div>${revisions.map(r => `<div class="revision-card"><div class="history-title">Version ${r.revisionNumber} · ${esc(TYPE_NAMES[r.type] || r.type)}<small>${esc(date(r.createdAt, true))} · ${esc(r.changeReason.replaceAll('_', ' ').toLowerCase())}</small></div>${r.title ? `<div class="history-detail">${esc(r.title)}</div>` : ''}<p>${esc(r.text)}</p></div>`).join('')}</div>
         </section>
       </div><div class="detail-side-col">
         <section class="panel"><div class="panel-head"><div><span class="eyebrow">YOUR INDEX</span><h2 style="margin-top:6px">Tags</h2></div><span class="section-meta">${(t.tags || []).length}</span></div><div class="tag-list">${(t.tags || []).map(tag => `<span class="tag-chip removeable">${esc(tag.name)}<button title="Remove tag" data-action="remove-tag" data-thought-id="${attr(t.id)}" data-tag-id="${attr(tag.id)}">×</button></span>`).join('') || '<span class="revision-note">No tags yet.</span>'}</div><form class="tag-form" id="add-tag-form"><input name="name" maxlength="40" placeholder="Add a tag" required><button class="button small" type="submit">Add</button></form></section>
         <section class="panel"><div class="panel-head"><div><span class="eyebrow">CANONICAL LINKS</span><h2 style="margin-top:6px">Connections</h2><p>AI proposals are not confirmed knowledge.</p></div><span class="section-meta">${connections.length}</span></div><div class="connection-list">${relationshipRows}</div><form class="relation-form" id="relationship-form"><select name="targetId" required class="wide"><option value="">Connect to a thought…</option>${relationOptions}</select><select name="type">${RELATION_TYPES.map(type => `<option value="${type}">${esc(type.replaceAll('_', ' '))}</option>`).join('')}</select><select name="provenance"><option value="USER_CONFIRMED">Confirmed by me</option><option value="AI_SUGGESTED">Unconfirmed AI suggestion</option></select><input class="wide" name="note" maxlength="300" placeholder="Optional note about this link"><span class="relation-help">Suggestions stay unconfirmed until you choose Confirm.</span><button class="button small" type="submit">＋ Add connection</button></form></section>
-        <section class="panel derived-panel"><div class="panel-head"><div><span class="derived-mark">Derived · rebuildable</span><h2 style="margin-top:7px">AI interpretation</h2><p>Never replaces your original words.</p></div></div>${derivedContent}<button class="button small" data-action="ai-summary" data-id="${attr(t.id)}" ${ai.available ? '' : 'disabled'}>${ai.available ? 'Generate a summary' : 'No AI provider configured'}</button></section>
+        ${renderAIConnectionsPanel(t.id, ai.available)}
+        <section class="panel derived-panel"><div class="panel-head"><div><span class="derived-mark">Derived · rebuildable</span><h2 style="margin-top:7px">AI interpretation</h2><p>Never replaces your original words.</p></div></div>${derivedContent}<div class="data-actions"><button class="button primary small" data-action="ai-interpret" data-id="${attr(t.id)}" ${ai.available ? "" : "disabled"}>${ai.available ? "Interpret this thought" : "Configure AI in Data & privacy"}</button><button class="button small" data-action="ai-summary" data-id="${attr(t.id)}" ${ai.available ? '' : 'disabled'}>${ai.available ? 'Generate a summary' : 'No AI provider configured'}</button></div></section>
       </div></div>`;
   }
 
@@ -743,46 +831,119 @@
     return rows.filter(Boolean);
   }
 
-  function renderGraph(thoughts, relationships) {
-    const count = thoughts.length;
-    const width = 900, height = 520, cx = width / 2, cy = height / 2;
-    const radius = count <= 2 ? 140 : Math.min(202, 80 + count * 8.2);
+  function renderGraph(nodes, relationships, selectedId = '') {
+    const width = 1200, height = 760, center = { x: width / 2, y: height / 2 };
+    const byId = new Map(nodes.map(node => [node.id, node]));
+    const parent = new Map(nodes.map(node => [node.id, node.id]));
+    const find = id => { let root = id; while (parent.get(root) !== root) root = parent.get(root); while (parent.get(id) !== id) { const next = parent.get(id); parent.set(id, root); id = next; } return root; };
+    const join = (a, b) => { let ra = find(a), rb = find(b); if (ra === rb) return; if (ra > rb) [ra, rb] = [rb, ra]; parent.set(rb, ra); };
+    const edgeKey = (a, b) => a < b ? `${a}|${b}` : `${b}|${a}`;
+    const canonicalPairs = new Set();
+    relationships.forEach(edge => { if (byId.has(edge.source) && byId.has(edge.target)) { canonicalPairs.add(edgeKey(edge.source, edge.target)); join(edge.source, edge.target); } });
+    const degree = new Map();
+    const affinities = [];
+    for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
+      const a = nodes[i], b = nodes[j], shared = (a.concepts || []).filter(term => (b.concepts || []).includes(term));
+      if (shared.length < 2 || canonicalPairs.has(edgeKey(a.id, b.id))) continue;
+      const unionSize = new Set([...(a.concepts || []), ...(b.concepts || [])]).size;
+      const score = shared.length / Math.max(1, unionSize);
+      if (score >= 0.12) affinities.push({ source: a.id, target: b.id, score });
+    }
+    affinities.sort((a, b) => b.score - a.score || a.source.localeCompare(b.source) || a.target.localeCompare(b.target));
+    const derivedEdges = [];
+    for (const edge of affinities) {
+      const a = degree.get(edge.source) || 0, b = degree.get(edge.target) || 0;
+      if (a >= 3 || b >= 3) continue;
+      degree.set(edge.source, a + 1); degree.set(edge.target, b + 1);
+      derivedEdges.push(edge); join(edge.source, edge.target);
+    }
+    const grouped = new Map();
+    nodes.forEach(node => { const root = node.clusterId || find(node.id); if (!grouped.has(root)) grouped.set(root, []); grouped.get(root).push(node); });
+    const communities = [...grouped.entries()].map(([id, members]) => {
+      const ordered = members.sort((a, b) => a.id.localeCompare(b.id));
+      const terms = new Map();
+      ordered.forEach(node => { (node.concepts || []).forEach(term => terms.set(term, (terms.get(term) || 0) + 1)); });
+      const label = [...terms.entries()].filter(([, count]) => count > 1).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 2).map(([term]) => term).join(' · ');
+      return { id, members: ordered, label: label || ordered[0]?.clusterLabel || 'Unlinked concepts' };
+    })
+      .sort((a, b) => b.members.length - a.members.length || a.id.localeCompare(b.id));
+    const fillById = new Map();
     const positions = new Map();
-    thoughts.forEach((t, i) => {
-      const angle = count === 1 ? -Math.PI / 2 : (-Math.PI / 2) + (2 * Math.PI * i / count);
-      positions.set(t.id, { x: cx + Math.cos(angle) * radius, y: cy + Math.sin(angle) * radius });
+    const regionMarkup = [];
+    communities.forEach((community, index) => {
+      const color = community.members.length > 1 ? communityColor(community.id) : '#8d8797';
+      const angle = -Math.PI / 2 + (Math.PI * 2 * index / Math.max(1, communities.length));
+      const orbit = communities.length === 1 ? 0 : Math.min(250, 90 + communities.length * 7);
+      const c = { x: center.x + Math.cos(angle) * orbit, y: center.y + Math.sin(angle) * orbit * 0.72 };
+      const ring = community.members.length <= 1 ? 0 : Math.min(185, 62 + community.members.length * 17);
+      community.members.forEach((node, i) => {
+        const localAngle = -Math.PI / 2 + Math.PI * 2 * i / community.members.length;
+        positions.set(node.id, { x: c.x + Math.cos(localAngle) * ring, y: c.y + Math.sin(localAngle) * ring * 0.78 });
+        fillById.set(node.id, color);
+      });
+      if (community.members.length > 1) {
+        const radius = Math.max(70, ring + 58);
+        regionMarkup.push(`<ellipse cx="${c.x}" cy="${c.y}" rx="${radius * 1.24}" ry="${radius}" fill="${color}" fill-opacity=".02" stroke="${color}" stroke-opacity=".08" stroke-dasharray="3 7"/><text class="community-label" x="${c.x}" y="${c.y - radius - 8}">${esc(community.label.slice(0, 30))} · ${community.members.length}</text>`);
+      }
     });
-    const visibleIds = new Set(thoughts.map(t => t.id));
-    const edges = relationships.filter(r => visibleIds.has(r.sourceId) && visibleIds.has(r.targetId));
-    const edgeMarkup = edges.map(r => {
-      const a = positions.get(r.sourceId), b = positions.get(r.targetId);
-      if (!a || !b) return '';
-      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-      const css = r.status === 'SUGGESTED' ? 'graph-edge suggested' : 'graph-edge';
-      return `<g><line class="${css}" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}"/><text class="graph-edge-label" x="${mx}" y="${my - 5}">${esc(r.type.replaceAll('_', ' '))}${r.status === 'SUGGESTED' ? ' · ?' : ''}</text></g>`;
+    const edgeMarkup = relationships.map(edge => {
+      const a = positions.get(edge.source), b = positions.get(edge.target); if (!a || !b) return '';
+      const css = edge.status === 'SUGGESTED' ? 'graph-edge suggested' : 'graph-edge';
+      return `<g><line class="${css}" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" marker-end="url(#graph-arrow)"/><title>${esc(edge.type)} · ${esc(edge.label || 'source to target')} · ${esc(edge.display || '')}</title></g>`;
     }).join('');
-    const nodeMarkup = thoughts.map(t => {
-      const p = positions.get(t.id);
-      const labels = splitNodeLabel(titleOf(t));
-      const labelMarkup = labels.map((line, i) => `<text x="${p.x}" y="${p.y + (i === 0 ? -2 : 9)}">${esc(line)}</text>`).join('');
-      return `<g class="graph-node ${typeClass(t.type)} ${t.status === 'GRAVEYARD' ? 'graveyard' : ''}" data-open-thought="${attr(t.id)}" tabindex="0" role="button" aria-label="Open ${attr(titleOf(t))}"><circle cx="${p.x}" cy="${p.y}" r="46"/>${labelMarkup}<text class="node-type" x="${p.x}" y="${p.y + 26}">${esc((TYPE_NAMES[t.type] || t.type).toUpperCase())}${t.status === 'GRAVEYARD' ? ' · GRAVE' : ''}</text></g>`;
+    const affinityMarkup = derivedEdges.map(edge => { const a = positions.get(edge.source), b = positions.get(edge.target); return `<line class="graph-edge affinity" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}"/>`; }).join('');
+    const radius = nodes.length > 100 ? 19 : nodes.length > 50 ? 29 : 43;
+    const nodeMarkup = nodes.map(node => {
+      const p = positions.get(node.id), color = fillById.get(node.id), title = node.displayLabel || node.id;
+      const lines = splitNodeLabel(title).slice(0, 2);
+      const label = lines.map((line, index) => `<text x="${p.x}" y="${p.y + (index === 0 ? -2 : 10)}">${esc(line)}</text>`).join('');
+      return `<g class="graph-node community-node ${node.status === 'GRAVEYARD' ? 'graveyard' : ''} ${node.id === selectedId ? 'selected' : ''}" data-action="select-graph-node" data-id="${attr(node.id)}" data-open-thought="${attr(node.id)}" tabindex="0" role="button" aria-pressed="${node.id === selectedId}" aria-label="Select ${attr(title)}; press Enter to open"><circle cx="${p.x}" cy="${p.y}" r="${radius}" style="--community-color:${color}"/><title>${esc(title)} · ${esc(SOURCE_NAMES[node.sourceType] || 'My thought')} · ${esc(node.lifecycleState || 'THOUGHT')} · ${esc(node.clusterLabel || 'Unlinked concept')}</title>${label}</g>`;
     }).join('');
-    return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Small relationship graph of thoughts"><g>${edgeMarkup}</g><g>${nodeMarkup}</g></svg>`;
+    return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Clickable graph of thought communities"><defs><marker id="graph-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#9ba99c"/></marker></defs><g>${regionMarkup.join('')}${affinityMarkup}${edgeMarkup}${nodeMarkup}</g></svg>`;
+  }
+
+  function renderGraphInspector(thought, node, links, aiAvailable) {
+    if (!thought || !node) return '<aside class="concept-inspector"><span class="eyebrow">CONCEPT INSPECTOR</span><h2>Select a concept</h2><p>Choose any node to inspect its original thought, source, lifecycle, and saved connections.</p></aside>';
+    const linkRows = links.length ? links.map(({ edge, other, direction }) => `<a class="inspector-link" data-open-thought="${attr(other.id)}"><span class="inspector-link-arrow">${direction === 'out' ? '→' : '←'}</span><span><strong>${esc(edge.type.replaceAll('_', ' '))}</strong><small>${esc(direction === 'out' ? 'To' : 'From')} · ${esc(titleOf(other))}</small></span><em class="provenance-pill ${edge.status === 'SUGGESTED' ? 'suggested' : 'confirmed'}">${edge.status === 'SUGGESTED' ? 'Suggested' : edge.provenance === 'AI_SUGGESTED' ? 'AI confirmed' : 'Confirmed'}</em></a>`).join('') : '<p class="inspector-empty">No saved relationships. Dashed graph hints are derived and do not create links.</p>';
+    return `<aside class="concept-inspector"><div class="inspector-heading"><span class="eyebrow">CONCEPT INSPECTOR</span><span class="inspector-community" style="--community-color:${communityColor(node.clusterId || node.clusterLabel || 'unlinked')}">${esc(node.clusterLabel || 'Unlinked concept')}</span></div><div class="inspector-badges">${sourcePill(node.sourceType)}${typePill(node.lifecycleState)}${statusPill(thought.status)}</div><h2>${esc(titleOf(thought))}</h2><time>${esc(date(thought.createdAt, true))}</time><p class="inspector-original">${esc(words(thought.originalText, 260))}</p><div class="tag-list">${tagPills((thought.tags || []).slice(0, 5))}</div><div class="inspector-section-head"><strong>Saved connections</strong><span>${links.length}</span></div><div class="inspector-links">${linkRows}</div>${renderAIConnectionsPanel(thought.id, aiAvailable, true)}<div class="inspector-actions"><button class="button small" data-action="ai-interpret" data-id="${attr(thought.id)}" ${aiAvailable ? '' : 'disabled'}>Interpret</button><button class="button primary small" data-open-thought="${attr(thought.id)}">Open original</button></div></aside>`;
+  }
+
+  function renderFileImport() {
+    const file = state.importedFile;
+    const extensions = '.txt,.text,.md,.markdown,.rst,.csv,.tsv,.json,.html,.htm,.xml,.yaml,.yml,.toml,.ini,.log,.py,.js,.jsx,.ts,.tsx,.css,.sql,.c,.h,.cpp,.java,.go,.rs,.sh,.ps1';
+    return `<section class="view-heading"><div><span class="eyebrow">LOCAL SOURCE READING</span><h1>Bring a document into thought.</h1><p>Choose a text or source file. IWTT reads it in this browser, then saves its extracted text as an imported thought so you can search, revise, connect, and revisit it.</p></div></section>
+      <section class="panel file-import-panel"><div class="file-drop"><span class="file-drop-icon">â†‘</span><strong>Bring a file into thought</strong><small>Text Â· Markdown Â· HTML Â· CSV Â· JSON Â· source code<br>2 MB file limit Â· up to 200,000 characters</small><small class="drop-hint">Drop a supported file here, or choose one below.</small><button class="button primary" type="button" data-action="choose-thought-file">Browse files</button><label class="file-input-label" for="thought-file-input">Or choose a file here</label><input id="thought-file-input" type="file" accept="${extensions}" aria-label="Choose a text or source-code file"></div>
+        <p class="file-import-privacy">Read locally; no AI is used during import. PDF and Word extraction are not supported in this build.</p>
+        ${file.error ? `<div class="recall-banner none"><strong>Could not read that file</strong><p>${esc(file.error)}</p></div>` : ''}
+        ${file.text ? `<form id="file-import-form" class="file-import-preview"><div class="file-preview-head"><div><span class="eyebrow">READY TO PRESERVE</span><h2>${esc(file.name)}</h2><p>${file.text.length.toLocaleString()} characters Â· will be stored as the immutable original capture</p></div><label class="field">Thought title<input name="title" maxlength="200" value="${attr(file.name)}"></label></div><pre class="file-preview-text">${esc(file.text.slice(0, 6000))}${file.text.length > 6000 ? '\n\nâ€¦ preview shortened; the full text will be preserved.' : ''}</pre><div class="edit-actions"><button class="button ghost" type="button" data-action="clear-file-preview">Clear preview</button><button class="button primary" type="button" data-action="build-imported-thought">Build imported thought</button></div></form>` : ''}
+      </section>`;
   }
 
   async function renderConnections() {
-    const [{ data: thoughtData }, { data: relData }] = await Promise.all([
-      api('/api/thoughts?status=ALL'), api('/api/relationships?status=LIVE')
+    const [{ data: thoughtData }, { data: relData }, { data: graphData }] = await Promise.all([
+      api('/api/thoughts?status=ALL'), api('/api/relationships?status=LIVE'), api('/api/graph/view?max_nodes=200&include_graveyard=true&include_suggested=true')
     ]);
     const allThoughts = thoughtData.thoughts;
     const allRelationships = relData.relationships;
-    const degree = new Map();
-    allRelationships.forEach(r => { degree.set(r.sourceId, (degree.get(r.sourceId) || 0) + 1); degree.set(r.targetId, (degree.get(r.targetId) || 0) + 1); });
-    const sorted = [...allThoughts].sort((a, b) => (degree.get(b.id) || 0) - (degree.get(a.id) || 0) || b.updatedAt.localeCompare(a.updatedAt));
-    const visible = sorted.slice(0, 16);
+    const allVisible = graphData.nodes || [];
+    const communityMap = new Map();
+    allVisible.forEach(node => { const key = node.clusterId || node.clusterLabel || 'unlinked'; const entry = communityMap.get(key) || { id: key, label: node.clusterLabel || 'Unlinked concepts', count: 0 }; entry.count++; communityMap.set(key, entry); });
+    const communityChoices = [...communityMap.values()].sort((a,b) => b.count-a.count || a.label.localeCompare(b.label));
+    const visible = state.graphCommunity === 'ALL' ? allVisible : allVisible.filter(node => (node.clusterId || node.clusterLabel || 'unlinked') === state.graphCommunity);
+    const visibleIds = new Set(visible.map(node => node.id));
+    const visibleEdges = (graphData.edges || []).filter(edge => visibleIds.has(edge.source) && visibleIds.has(edge.target));
+    const selectedId = visibleIds.has(state.graph.selectedId) ? state.graph.selectedId : (visible[0]?.id || '');
+    state.graph.selectedId = selectedId || null;
+    const selectedNode = visible.find(node => node.id === selectedId);
+    const selectedThought = allThoughts.find(thought => thought.id === selectedId);
+    const thoughtById = new Map(allThoughts.map(thought => [thought.id, thought]));
+    const selectedLinks = visibleEdges.filter(edge => edge.source === selectedId || edge.target === selectedId).map(edge => ({
+      edge, direction: edge.source === selectedId ? 'out' : 'in', other: thoughtById.get(edge.source === selectedId ? edge.target : edge.source),
+    })).filter(link => link.other);
+    const { data: aiStatus } = await api('/api/ai/status');
     const hiddenCount = Math.max(0, allThoughts.length - visible.length);
-    return `<section class="view-heading"><div><span class="eyebrow">CONNECTION EXPLORER V2 · CANONICAL LINKS ONLY</span><h1>Connections between thoughts.</h1><p>Every line comes from a relationship you saved. Trace a path, inspect one thought's neighbourhood, and see which parts are canonical and which are derived. Layout is temporary and calculated in your browser; it is not part of your thought data.</p></div><div class="heading-actions"><button class="button" data-view="clusters">Derived clusters</button><button class="button" data-view="vault">Browse vault</button></div></section>
-      ${allThoughts.length ? connectionExplorerPanels(allThoughts) + `<section class="panel graph-panel"><div class="graph-canvas">${renderGraph(visible, allRelationships)}</div><div class="graph-legend"><span><i class="legend-dot"></i> Thought / Experiment</span><span><i class="legend-dot proj"></i> Invention / Project</span><span><i class="legend-line"></i> Confirmed by you</span><span><i class="legend-line dashed"></i> Unconfirmed suggestion</span><span>Click a node to inspect</span></div>${hiddenCount ? `<p class="revision-note" style="padding:0 5px">Showing the 16 most-connected/recent thoughts of ${allThoughts.length}. The graph is a browsing aid, not a complete Mind World.</p>` : ''}</section>
+    return `<section class="view-heading"><div><span class="eyebrow">CONNECTION EXPLORER V2 · CANONICAL LINKS ONLY</span><h1>Connections between thoughts.</h1><p>Solid arrows show saved directional relationships; dashed links are local shared-concept hints. Click a concept to open its source thought. Positions and inferred links are never saved.</p></div><div class="heading-actions"><button class="button" data-view="clusters">Derived clusters</button><button class="button" data-view="vault">Browse vault</button></div></section>
+      ${allThoughts.length ? `<div class="graph-workspace"><aside class="community-rail"><div class="community-rail-head"><div><strong>Communities</strong><small>DERIVED GROUPS</small></div><span>${communityChoices.length} total</span></div><button class="community-filter ${state.graphCommunity === 'ALL' ? 'selected' : ''}" data-action="graph-community" data-community="ALL"><i class="community-swatch all"></i><span>All concepts</span><small>${allVisible.length}</small></button>${communityChoices.map((community,index) => `<button class="community-filter ${state.graphCommunity === community.id ? 'selected' : ''}" data-action="graph-community" data-community="${attr(community.id)}"><i class="community-swatch" style="--community-color:${communityColor(community.id)}"></i><span>${esc(community.label)}</span><small>${community.count}</small></button>`).join('')}<p>Automatically discovered groups are derived; they do not change your saved thoughts.</p></aside><section class="panel graph-panel"><div class="graph-toolbar"><span><strong>${visible.length}</strong> concepts · <strong>${visibleEdges.length}</strong> stored links</span><small>Click any concept to inspect the original thought.</small></div><div class="graph-canvas">${renderGraph(visible, visibleEdges, selectedId)}</div><div class="graph-legend"><span><i class="legend-line"></i> Saved, directional relationship</span><span><i class="legend-line affinity"></i> Shared concepts · derived, not saved</span><span>Color regions = automatically detected communities</span></div>${hiddenCount ? `<p class="revision-note" style="padding:0 5px">Showing ${visible.length} of ${allThoughts.length} concepts (graph view cap). Use search or click a visible node to navigate.</p>` : ''}</section>${renderGraphInspector(selectedThought, selectedNode, selectedLinks, aiStatus.available)}</div>${connectionExplorerPanels(allThoughts)}
       <div class="section-head"><h2>Saved connections</h2><span class="section-meta">${allRelationships.length} active · ${allRelationships.filter(r => r.status === 'SUGGESTED').length} unconfirmed</span></div>
       ${allRelationships.length ? `<div class="list-stack">${allRelationships.map(r => `<article class="list-thought" style="cursor:default"><div><div class="list-meta"><span class="match-pill">${esc(r.type.replaceAll('_', ' '))}</span><span class="provenance-pill ${r.status === 'SUGGESTED' ? 'suggested' : 'confirmed'}">${r.status === 'SUGGESTED' ? 'Unconfirmed AI suggestion' : r.provenance === 'AI_SUGGESTED' ? 'Confirmed AI suggestion' : 'User-confirmed'}</span></div><h3><button class="connection-target" data-open-thought="${attr(r.sourceId)}">${esc(r.source?.title || 'Thought')}</button> <span style="color:#9aa197">↔</span> <button class="connection-target" data-open-thought="${attr(r.targetId)}">${esc(r.target?.title || 'Thought')}</button></h3><p>${esc(r.metadata?.note || 'A saved relationship between two canonical thoughts.')}</p></div><div class="list-right">${r.status === 'SUGGESTED' ? `<button class="button small" data-action="confirm-relationship" data-id="${attr(r.id)}">Confirm</button>` : `<span class="thought-date">${esc(date(r.createdAt))}</span>`}</div></article>`).join('')}</div>` : '<div class="empty-state"><div class="empty-icon">⌘</div><h3>No connections saved yet</h3><p>Open a thought to link it to another. AI suggestions, if added, stay proposals until you confirm them.</p></div>'}` : emptyState('Your graph begins with two thoughts', 'Capture a couple of ideas, then connect them from a thought’s detail view.', 'Capture a thought', 'capture')}`;
   }
@@ -799,7 +960,7 @@
         <section class="data-card"><h2>Take your vault with you</h2><p>JSON is the documented reconstruction format. Markdown is a readable snapshot. A backup is a real SQLite database file saved locally and downloaded to you.</p><div class="data-actions"><button class="button primary" data-action="export-json">↓ Export canonical JSON</button><button class="button" data-action="export-md">↓ Export Markdown</button><button class="button" data-action="backup">↓ Backup SQLite</button><button class="button" data-action="choose-import">↑ Import JSON</button><input id="vault-import-file" class="inline-file" type="file" accept="application/json,.json"></div><span class="path-box">Import is additive and all-or-nothing. Existing IDs or conflicting tags stop the import; existing records are never overwritten.</span></section>
         <section class="data-card"><h2>Rebuildable data</h2><p>Search documents and AI artifacts are derived. Deleting them leaves original/current thought text, revisions, relationships, events, tags, and Graveyard history intact. Search rebuilds its local index automatically when needed.</p><div class="data-actions"><button class="button" data-action="rebuild-index">Rebuild local search index</button><button class="button danger" data-action="delete-derived">Delete all derived data</button></div></section>
         <section class="data-card demo-card"><h2>Fictional demo records</h2><p>Demo thoughts are visibly marked and excluded only when you remove them here. They demonstrate promotions, contradiction, a Graveyard item, resurrection, and an unconfirmed AI relationship.</p><p class="demo-warning">${demo.loaded ? `${demo.thoughts} demo thoughts · ${demo.relationships} demo connections are loaded.` : 'No demo records are currently loaded.'}</p><div class="data-actions">${demoButton}</div></section>
-        <section class="data-card"><h2>Optional AI boundary</h2><p>${ai.available ? `Configured: ${esc(ai.provider)}${ai.model ? ` · ${esc(ai.model)}` : ''}. AI is invoked only when you explicitly request a derived action.` : 'No AI provider is configured. IWTT does not send thoughts anywhere and all core features remain available.'}</p><span class="path-box">AI endpoint is opt-in via IWTT_AI_BASE_URL. No default cloud provider, tracking, analytics, or telemetry.</span></section>
+        <section class="data-card ai-config-card"><h2>AI interpretation ? same app, optional provider</h2><p>Configure an OpenAI-compatible hosted AI endpoint here. IWTT sends selected thought text only after you press Interpret. No separate server or app is needed; your key stays in memory until IWTT closes and is never placed in the vault export.</p><form id="ai-config-form" class="ai-config-form"><label class="field">API base URL<input name="baseUrl" type="url" maxlength="500" placeholder="https://api.example.com/v1" required></label><div class="ai-config-row"><label class="field">Model<input name="model" maxlength="120" placeholder="model name" required></label><label class="field">API key<input name="apiKey" type="password" maxlength="1000" autocomplete="off" placeholder="Stored in memory only"></label></div><div class="data-actions"><button class="button primary" type="submit">Enable AI for this session</button><button class="button" type="button" data-action="disable-ai">Disconnect AI</button></div></form><span class="path-box">AI is optional. Hosted AI receives the selected thought text only when you request interpretation. The key is held in memory and excluded from exports.</span></section>
       </div><aside class="data-section"><div class="privacy-callout"><strong>Private by design.</strong><p>There is no account, sync, analytics, advertising, or network dependency for basic use. When served on loopback, the vault stays on this computer. Do not bind to a public network unless you add appropriate access controls.</p></div>
         <section class="data-card"><h2>Vault contents</h2><div class="data-stats"><div class="data-stat"><strong>${stats.totalThoughts}</strong><small>Thoughts</small></div><div class="data-stat"><strong>${stats.revisions}</strong><small>Revisions</small></div><div class="data-stat"><strong>${stats.relationships}</strong><small>Confirmed links</small></div><div class="data-stat"><strong>${stats.suggestedRelationships}</strong><small>AI proposals</small></div><div class="data-stat"><strong>${stats.events}</strong><small>History events</small></div><div class="data-stat"><strong>${stats.tags}</strong><small>Tags</small></div></div></section>
         <section class="data-card"><h2>Local storage</h2><p>SQLite · v${esc(health.version)}. The database survives app restarts.</p><span class="path-box">${esc(health.databasePath)}</span><p style="margin-top:10px">Backup files are stored in <code>${esc(health.dataDirectory)}/backups</code> and downloaded via the browser.</p></section>
@@ -822,9 +983,33 @@
     return filename;
   }
 
+  async function saveImportedThought(trigger) {
+    const form = trigger.closest('form');
+    const submit = form?.querySelector('[type=submit]') || trigger;
+    const title = String((form ? new FormData(form).get('title') : '') || state.importedFile.name).trim();
+    if (!state.importedFile.name || !state.importedFile.text) {
+      toast('Choose a readable file before building an imported thought.', 'error');
+      return;
+    }
+    submit.disabled = true;
+    const oldLabel = submit.textContent;
+    submit.textContent = 'Building…';
+    try {
+      const { data } = await api('/api/files/import', { method: 'POST', body: { filename: state.importedFile.name, text: state.importedFile.text, title } });
+      toast('File preserved as an imported thought. The source text is unchanged.');
+      state.importedFile = { name: '', text: '', error: '' };
+      await openThought(data.thought.id);
+    } catch (error) {
+      toast(`Could not build imported thought: ${error.message}`, 'error');
+      submit.disabled = false;
+      submit.textContent = oldLabel;
+    }
+  }
+
   async function performAction(action, button) {
     const id = button.dataset.id;
     if (action === 'reload') return render();
+    if (action === 'clear-file-preview') { state.importedFile = { name: '', text: '', error: '' }; return render(); }
     if (action === 'back-to-parent') return navigate(state.parentView, { preserveQuery: state.parentView === 'search' });
     if (action === 'clear-search') { state.query = ''; return render(); }
     // ---- v0.2 actions ----
@@ -848,6 +1033,30 @@
       return render();
     }
     if (action === 'vault-type') { state.vaultType = button.dataset.type; return render(); }
+    if (action === 'graph-community') { state.graphCommunity = button.dataset.community || 'ALL'; return render(); }
+    if (action === 'select-graph-node') { state.graph.selectedId = id; return render(); }
+    if (action === 'ai-interpret') {
+      await api(`/api/thoughts/${encodeURIComponent(id)}/ai/interpret`, { method: 'POST', body: {} });
+      toast('Interpretation saved as derived information. Your original capture is unchanged.');
+      return render();
+    }
+    if (action === 'capture-ai-interpretation') {
+      const { data } = await api(`/api/thoughts/${encodeURIComponent(id)}`);
+      const thought = data.thought;
+      const artifact = (thought.derivedArtifacts || []).find(item => item.artifactType === 'AI_INTERPRETATION');
+      if (!artifact) throw new Error('Interpret this thought first.');
+      const payload = artifact.payload || {};
+      state.captureDraft = {
+        sourceType: 'AI_INTERPRETATION', title: `Idea from ${titleOf(thought)}`,
+        text: [payload.summary, payload.concepts?.length ? `Concepts: ${payload.concepts.join(', ')}` : '', payload.openQuestions?.length ? `Questions to explore:\n${payload.openQuestions.map(item => `• ${item}`).join('\n')}` : ''].filter(Boolean).join('\n\n'),
+      };
+      return navigate('capture');
+    }
+    if (action === 'disable-ai') {
+      await api('/api/ai/configure', { method: 'POST', body: { enabled: false } });
+      toast('AI disconnected for this session.');
+      return render();
+    }
     if (action === 'toggle-search-graveyard') { state.includeGraveyard = !state.includeGraveyard; return render(); }
     if (action === 'graveyard') {
       if (!window.confirm('Move this thought to the Graveyard? It will not be deleted. Its original capture, relationships, and history remain.')) return;
@@ -893,6 +1102,8 @@
       return;
     }
     if (action === 'choose-import') return document.getElementById('vault-import-file')?.click();
+    if (action === 'choose-thought-file') return document.getElementById('thought-file-input')?.click();
+    if (action === 'build-imported-thought') return saveImportedThought(button);
     if (action === 'delete-derived') {
       if (!window.confirm('Delete every rebuildable search document and AI artifact? Canonical thoughts, revisions, relationships, events, tags, and Graveyard history will remain.')) return;
       const { data } = await api('/api/data/derived', { method: 'DELETE' });
@@ -925,6 +1136,14 @@
   document.addEventListener('click', async event => {
     const actionButton = event.target.closest('[data-action]');
     if (actionButton) {
+      if (actionButton.dataset.action === 'choose-thought-file') {
+        const picker = document.getElementById('thought-file-input');
+        if (picker) {
+          try { if (typeof picker.showPicker === 'function') picker.showPicker(); else picker.click(); }
+          catch (_) { picker.click(); }
+        }
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       try { await performAction(actionButton.dataset.action, actionButton); }
@@ -992,13 +1211,33 @@
       try {
         const { data } = await api('/api/thoughts', { method: 'POST', body: {
           originalText: formData.get('originalText'), title: formData.get('title') || '',
-          type: formData.get('type') || 'THOUGHT', tags,
+          type: formData.get('type') || 'THOUGHT', sourceType: formData.get('sourceType') || 'THOUGHT', tags,
         } });
         toast('Thought captured. Your original words are preserved.');
         state.view = 'capture';
         state.thoughtId = null;
+        state.captureDraft = null;
         await render();
       } catch (error) { toast(error.message, 'error'); submit.disabled = false; }
+      return;
+    }
+    if (form.id === 'ai-config-form') {
+      event.preventDefault();
+      const values = new FormData(form);
+      const submit = form.querySelector('[type=submit]');
+      submit.disabled = true;
+      try {
+        await api('/api/ai/configure', { method: 'POST', body: {
+          baseUrl: values.get('baseUrl'), model: values.get('model'), apiKey: values.get('apiKey') || '',
+        } });
+        toast('AI enabled for this session. The key is not saved in the vault.');
+        await render();
+      } catch (error) { toast(error.message, 'error'); submit.disabled = false; }
+      return;
+    }
+    if (form.id === 'file-import-form') {
+      event.preventDefault();
+      await saveImportedThought(form);
       return;
     }
     if (form.id === 'thought-edit-form') {
@@ -1039,6 +1278,18 @@
       } catch (error) { toast(error.message, 'error'); }
       return;
     }
+    if (form.classList.contains('relationship-evidence-form')) {
+      event.preventDefault();
+      const text = String(new FormData(form).get('text') || '').trim();
+      try {
+        await api(`/api/relationships/${encodeURIComponent(form.dataset.relationshipId)}/evidence-notes`, {
+          method: 'POST', body: { text },
+        });
+        toast('Evidence note saved in connection history.');
+        await render();
+      } catch (error) { toast(error.message, 'error'); }
+      return;
+    }
   });
 
   document.addEventListener('input', event => {
@@ -1049,7 +1300,55 @@
     if (event.target.id === 'recall-input') scheduleRecall();
   });
 
+  async function readThoughtFile(file) {
+    if (!file) return;
+    const supported = /\.(txt|text|md|markdown|rst|csv|tsv|json|html?|xml|ya?ml|toml|ini|log|py|jsx?|tsx?|css|sql|c|h|cpp|java|go|rs|sh|ps1)$/i.test(file.name);
+    if (!supported || file.size > 2_000_000) {
+      state.importedFile = { name: '', text: '', error: !supported ? 'This format is not supported. Choose a text, Markdown, data, HTML, note, or source-code file.' : 'This file is larger than the 2 MB limit.' };
+      return render();
+    }
+    try {
+      let text = await file.text();
+      if (/\.html?$/i.test(file.name)) {
+        const doc = new DOMParser().parseFromString(text, 'text/html');
+        doc.querySelectorAll('script,style,noscript,template').forEach(node => node.remove());
+        text = (doc.body?.innerText || doc.body?.textContent || '').trim();
+      }
+      if (!text.trim()) throw new Error('No readable text was found in this file.');
+      if (text.length > 200_000) throw new Error('This file contains more than 200,000 characters.');
+      state.importedFile = { name: file.name, text, error: '' };
+    } catch (error) { state.importedFile = { name: '', text: '', error: error.message }; }
+    return render();
+  }
+
+  app.addEventListener('dragenter', event => {
+    const area = event.target.closest('.file-drop');
+    if (!area) return;
+    event.preventDefault();
+    area.classList.add('is-dragover');
+  });
+  app.addEventListener('dragover', event => {
+    if (!event.target.closest('.file-drop')) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  });
+  app.addEventListener('dragleave', event => {
+    const area = event.target.closest('.file-drop');
+    if (area && !area.contains(event.relatedTarget)) area.classList.remove('is-dragover');
+  });
+  app.addEventListener('drop', event => {
+    const area = event.target.closest('.file-drop');
+    if (!area) return;
+    event.preventDefault();
+    area.classList.remove('is-dragover');
+    const file = event.dataTransfer?.files?.[0];
+    if (file) void readThoughtFile(file);
+  });
+
   document.addEventListener('change', async event => {
+    if (event.target.id === 'thought-file-input' && event.target.files?.length) {
+      return readThoughtFile(event.target.files[0]);
+    }
     if (event.target.id === 'include-graveyard') {
       state.includeGraveyard = event.target.checked;
       return refreshSearch();
@@ -1060,6 +1359,10 @@
     if (event.target.id === 'recall-graveyard') {
       state.recall.includeGraveyard = event.target.checked;
       return runRecall();
+    }
+    if (event.target.matches('[data-action="vault-source-type"]')) {
+      state.vaultSourceType = event.target.value;
+      return render();
     }
     if (event.target.id === 'vault-import-file' && event.target.files?.length) {
       const file = event.target.files[0];
@@ -1086,12 +1389,13 @@
   });
 
   (async function init() {
-    await render();
     const params = new URLSearchParams(window.location.search);
     if (params.get('view') === 'search') {
       state.view = 'search';
       state.query = params.get('q') || '';
-      await render();
+    } else if (['connections', 'import'].includes(params.get('view'))) {
+      state.view = params.get('view');
     }
+    await render();
   })();
 })();

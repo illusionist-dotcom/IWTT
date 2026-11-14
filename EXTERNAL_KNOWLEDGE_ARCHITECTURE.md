@@ -2,6 +2,12 @@
 
 **Status: foundation only. Interfaces, vocabulary and documentation — no ingestion.**
 
+## Local text-file capture
+
+IWTT supports user-selected plain-text and source files as **imported thoughts**. The extracted text is preserved as the thought's immutable original capture, tagged `imported-file`, and the capture event records the source basename. This explicit action does not create an `EXTERNAL_KNOWLEDGE_ENTITY`, AST, or source graph. Text, Markdown, CSV, JSON, HTML, notes, and source-code formats are supported up to 200,000 characters. PDF and Word extraction are not supported. Any AI interpretation remains an explicit optional derived action.
+
+This capture path does not change the future boundary described below: a source-file node should remain a separate external entity when IWTT needs line anchors, repository identity, file revisions, or links from thoughts into code.
+
 IWTT v0.2 reserves the namespace, entity types, provenance vocabulary, boundary
 guards and cross-domain relationship design that a *future* version would need in
 order to connect a human thought to external knowledge — a repository, a source file,

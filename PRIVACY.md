@@ -22,7 +22,7 @@ The server has no authentication or multi-user access control. Do not bind it to
 
 ## AI
 
-No provider is configured by default. If `IWTT_AI_BASE_URL` is set, the configured service receives text only when the user explicitly invokes an AI action. A remote endpoint is possible only by deliberate configuration. Read [AI_BOUNDARIES.md](AI_BOUNDARIES.md) before enabling it. Do not include API keys in files or exported vaults.
+No provider is configured by default. The Data & privacy screen can configure an OpenAI-compatible endpoint for the current app session; this uses the existing IWTT server process, not a second app. Hosted providers require an account/key and receive selected thought text only when the user explicitly invokes interpretation or summary. Runtime keys are kept in process memory and are not included in SQLite or exports. AI output remains derived. Read [AI_BOUNDARIES.md](AI_BOUNDARIES.md) before enabling it.
 
 ## User responsibility
 

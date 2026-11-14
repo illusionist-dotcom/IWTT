@@ -6,7 +6,7 @@
 
 ## Optional provider
 
-The provider interface is in `iwtt/ai.py`. It includes summary, tag suggestion, and relationship-suggestion methods. The optional adapter speaks an OpenAI-compatible chat-completions API. Configuration is explicit:
+The provider interface is in `iwtt/ai.py`. It includes summary, interpretation, tag suggestion, and relationship-suggestion methods. The optional adapter speaks an OpenAI-compatible chat-completions API. In addition to environment configuration, Data & privacy can configure an endpoint for the current process session. This uses IWTT's existing local app process and does not require starting a second server or app.
 
 ```bash
 IWTT_AI_BASE_URL="http://127.0.0.1:1234/v1" \
@@ -14,11 +14,11 @@ IWTT_AI_MODEL="your-local-model" \
 python -m iwtt.server
 ```
 
-If required, `IWTT_AI_API_KEY` may be set in the environment. Do not put secrets in source control. An endpoint may be remote if an operator deliberately configures one; use a local endpoint for fully local inference. Configuration alone does not generate summaries: the user must invoke the per-thought action. The current UI exposes explicit summary generation; other provider methods are extension points and are not exposed as automatic background jobs.
+If required, `IWTT_AI_API_KEY` may be set in the environment. The in-app API key is held in process memory and is not written to SQLite or exports. Do not put secrets in source control. A remote endpoint receives selected thought content only when the user explicitly invokes an AI action; use a local endpoint for fully local inference. Configuration alone does not generate summaries or interpretations. Interpretation is capped at 30,000 characters per text field, reports when the source was truncated, and returns summary, concepts, questions, and possible next steps as reviewable derived data.
 
 ## Provenance and canonical boundaries
 
-An AI summary is stored in `derived_artifacts`, not in original/current text or user title. It records artifact UUID, source thought IDs, artifact type, provider/model, generation time, and payload. The detail view labels it **AI-generated / Derived**. `AI_SUMMARY_GENERATED` is a canonical event that records the action; deleting the artifact does not erase thought history.
+AI summaries and interpretations are stored in `derived_artifacts`, not in original/current text or user title. They record artifact UUID, source thought IDs, artifact type, provider/model, generation time, and payload. The detail view labels them **AI-generated / Derived**. Canonical events record that an AI action occurred; deleting its artifact does not erase thought history. The user may copy an interpretation into a new, editable capture draft, which is clearly marked as AI interpretation and is saved only after the user's review and action.
 
 Relationship origin and confirmation are separate:
 

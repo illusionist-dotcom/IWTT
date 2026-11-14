@@ -6,6 +6,7 @@ from pathlib import Path
 
 from iwtt.ai import AIUnavailable, NoAIProvider
 from iwtt.store import ConflictError, ValidationError, Vault
+from sqlite_helpers import connect_sqlite
 
 
 class VaultTestCase(unittest.TestCase):
@@ -172,7 +173,7 @@ class VaultTestCase(unittest.TestCase):
         backup_path = self.vault.backup()
         self.assertTrue(backup_path.is_file())
         self.assertGreater(backup_path.stat().st_size, 0)
-        with sqlite3.connect(backup_path) as conn:
+        with connect_sqlite(backup_path) as conn:
             self.assertEqual(conn.execute("PRAGMA integrity_check").fetchone()[0], "ok")
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM thoughts").fetchone()[0], 1)
 

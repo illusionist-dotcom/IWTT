@@ -48,6 +48,7 @@ RELATIONSHIP_TYPES = {
 }
 RELATIONSHIP_PROVENANCE = {"USER_CONFIRMED", "AI_SUGGESTED"}
 RELATIONSHIP_STATUSES = {"SUGGESTED", "CONFIRMED", "REMOVED"}
+CAPTURE_KINDS = {"THOUGHT", "IDEA", "MESSAGE", "PROMPT", "IMPORTED", "AI_INTERPRETATION"}
 TOKEN_ALIASES = {
     "adapt": {"adjust", "change", "learn", "evolve"},
     "enemy": {"enemies", "opponent", "foe"},
@@ -193,6 +194,27 @@ def _json_load(value: str | None, fallback: Any = None) -> Any:
         return json.loads(value)
     except (TypeError, json.JSONDecodeError):
         return {} if fallback is None else fallback
+
+
+def _capture_kind_map(conn: sqlite3.Connection, thought_ids: Sequence[str]) -> dict[str, str]:
+    """Read user-selected source kinds from canonical creation events."""
+    ids = list(dict.fromkeys(thought_ids))
+    kinds = {thought_id: "THOUGHT" for thought_id in ids}  # legacy records
+    for start in range(0, len(ids), 400):
+        chunk = ids[start:start + 400]
+        marks = ",".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"SELECT target_id, metadata_json FROM events WHERE target_type='THOUGHT' "
+            f"AND event_type='THOUGHT_CREATED' AND target_id IN ({marks}) ORDER BY timestamp,rowid",
+            chunk,
+        )
+        for row in rows:
+            metadata = _json_load(row["metadata_json"], {})
+            if isinstance(metadata, dict):
+                kind = metadata.get("captureKind")
+                if kind in CAPTURE_KINDS:
+                    kinds[row["target_id"]] = kind
+    return kinds
 
 
 def normalize_text(value: str) -> str:
@@ -542,11 +564,16 @@ class Vault:
         thought_type: str = "THOUGHT",
         title: str = "",
         tags: list[str] | None = None,
+        capture_source: dict[str, str] | None = None,
+        source_type: str = "THOUGHT",
     ) -> dict[str, Any]:
         original_text = _clean_text(original_text, "originalText")
         thought_type = (thought_type or "THOUGHT").upper()
         if thought_type not in THOUGHT_TYPES:
             raise ValidationError(f"type must be one of: {', '.join(sorted(THOUGHT_TYPES))}")
+        source_type = (source_type or "THOUGHT").upper()
+        if source_type not in CAPTURE_KINDS:
+            raise ValidationError(f"sourceType must be one of: {', '.join(sorted(CAPTURE_KINDS))}")
         title = _clean_title(title)
         tag_names = tags or []
         if not isinstance(tag_names, list):
@@ -564,7 +591,12 @@ class Vault:
             )
             self._insert_event(
                 conn, "THOUGHT", thought_id, "THOUGHT_CREATED",
-                {"initialType": thought_type, "revisionId": revision_id}, timestamp,
+                {
+                    "initialType": thought_type,
+                    "revisionId": revision_id,
+                    "captureKind": source_type,
+                    **({"captureSource": capture_source} if capture_source else {}),
+                }, timestamp,
             )
             for name in tag_names:
                 self._ensure_tag(conn, thought_id, name, timestamp)
@@ -692,13 +724,17 @@ class Vault:
                     (thought_id,),
                 ).fetchall()
             result["events"] = [self._event_record(item) for item in event_rows]
+            result["sourceType"] = _capture_kind_map(conn, [thought_id])[thought_id]
             artifact_rows = conn.execute(
                 "SELECT * FROM derived_artifacts WHERE thought_id=? ORDER BY generated_at DESC", (thought_id,)
             ).fetchall()
             result["derivedArtifacts"] = [self._artifact_record(item) for item in artifact_rows]
             return result
 
-    def list_thoughts(self, status: str = "ACTIVE", thought_type: str | None = None) -> list[dict[str, Any]]:
+    def list_thoughts(
+        self, status: str = "ACTIVE", thought_type: str | None = None,
+        source_type: str | None = None,
+    ) -> list[dict[str, Any]]:
         status = (status or "ACTIVE").upper()
         if status not in THOUGHT_STATUSES | {"ALL"}:
             raise ValidationError("status must be ACTIVE, GRAVEYARD, or ALL")
@@ -718,9 +754,16 @@ class Vault:
             rows = conn.execute(
                 "SELECT * FROM thoughts" + where + " ORDER BY updated_at DESC, created_at DESC", params
             ).fetchall()
+            capture_kinds = _capture_kind_map(conn, [row["id"] for row in rows])
+            normalized_source = (source_type or "").upper()
+            if normalized_source and normalized_source not in CAPTURE_KINDS:
+                raise ValidationError("Unknown sourceType")
             result = []
             for row in rows:
+                if normalized_source and capture_kinds.get(row["id"], "THOUGHT") != normalized_source:
+                    continue
                 item = self._thought_record(row)
+                item["sourceType"] = capture_kinds.get(row["id"], "THOUGHT")
                 item["tags"] = self._tags_for_thought(conn, row["id"])
                 item["relationshipCount"] = conn.execute(
                     "SELECT COUNT(*) FROM relationships WHERE status IN ('CONFIRMED','SUGGESTED') "
@@ -920,6 +963,49 @@ class Vault:
                 raise KeyError(f"Relationship not found: {relationship_id}")
             return self._relationship_with_endpoints(conn, row)
 
+    def add_relationship_evidence_note(self, relationship_id: str, text: str) -> dict[str, Any]:
+        """Append a user-authored evidence note to a canonical relationship.
+
+        Notes live in the existing canonical relationship metadata JSON and are
+        also recorded in the event history. They describe the user's reason for
+        a connection; they are not machine-verified source evidence.
+        """
+        relationship_id = _valid_uuid(relationship_id, "relationshipId")
+        if not isinstance(text, str):
+            raise ValidationError("evidence note must be text")
+        text = text.strip()
+        if not text:
+            raise ValidationError("evidence note cannot be empty")
+        if len(text) > 2000:
+            raise ValidationError("evidence note must be 2,000 characters or fewer")
+
+        timestamp = now_utc()
+        note = {"id": new_id(), "kind": "USER_AUTHORED_NOTE", "text": text, "createdAt": timestamp}
+        with self._transaction() as conn:
+            row = conn.execute("SELECT * FROM relationships WHERE id=?", (relationship_id,)).fetchone()
+            if row is None:
+                raise KeyError(f"Relationship not found: {relationship_id}")
+            if row["status"] == "REMOVED":
+                raise ConflictError("Evidence notes cannot be added to a removed relationship")
+            metadata = _json_load(row["metadata_json"])
+            if not isinstance(metadata, dict):
+                raise ValidationError("relationship metadata must be an object")
+            notes = metadata.setdefault("evidenceNotes", [])
+            if not isinstance(notes, list):
+                raise ValidationError("relationship evidenceNotes must be a list")
+            if len(notes) >= 100:
+                raise ValidationError("relationship cannot have more than 100 evidence notes")
+            notes.append(note)
+            conn.execute(
+                "UPDATE relationships SET metadata_json=?,updated_at=? WHERE id=?",
+                (_json(metadata), timestamp, relationship_id),
+            )
+            self._insert_event(
+                conn, "RELATIONSHIP", relationship_id, "RELATIONSHIP_EVIDENCE_NOTE_ADDED",
+                {"evidenceNoteId": note["id"], "text": text}, timestamp, bool(row["is_demo"]),
+            )
+        return self.get_relationship(relationship_id)
+
     def list_relationships(self, status: str = "LIVE") -> list[dict[str, Any]]:
         status = (status or "LIVE").upper()
         if status == "LIVE":
@@ -1010,6 +1096,18 @@ class Vault:
     def _event_summary(event: dict[str, Any]) -> str:
         event_type = event.get("eventType", "").upper()
         metadata = event.get("metadata") or {}
+        if event_type == "THOUGHT_CREATED":
+            kind = str(metadata.get("captureKind") or "THOUGHT").upper()
+            if kind == "IMPORTED":
+                filename = (metadata.get("captureSource") or {}).get("fileName")
+                return f"Imported source captured: {filename}" if filename else "Imported source captured"
+            return {
+                "THOUGHT": "Thought captured",
+                "IDEA": "Idea captured",
+                "MESSAGE": "Message captured",
+                "PROMPT": "Prompt captured",
+                "AI_INTERPRETATION": "AI interpretation captured as a new draft",
+            }.get(kind, "Thought captured")
         labels = {
             "THOUGHT_CREATED": "Thought captured",
             "THOUGHT_EDITED": "Thought edited; a new revision was preserved",
@@ -1022,7 +1120,9 @@ class Vault:
             "RELATIONSHIP_CREATED": f"Connection created: {metadata.get('relationshipType', 'RELATED_TO')}",
             "RELATIONSHIP_CONFIRMED": "Suggested connection confirmed by you",
             "RELATIONSHIP_REMOVED": "Connection removed (history retained)",
+            "RELATIONSHIP_EVIDENCE_NOTE_ADDED": "User-authored evidence note added to a connection",
             "AI_SUMMARY_GENERATED": "AI summary generated (derived)",
+            "AI_INTERPRETATION_GENERATED": "AI interpretation generated (derived)",
         }
         return labels.get(event_type, event_type.replace("_", " ").title())
 
@@ -1195,6 +1295,7 @@ class Vault:
             if not include_graveyard:
                 sql += " WHERE t.status='ACTIVE'"
             rows = conn.execute(sql, params).fetchall()
+            capture_kinds = _capture_kind_map(conn, [row["id"] for row in rows])
             ranked: list[tuple[float, dict[str, Any]]] = []
             for row in rows:
                 tags = self._tags_for_thought(conn, row["id"])
@@ -1248,6 +1349,7 @@ class Vault:
                     else:
                         reason = "Keyword match"
                 record = self._thought_record(row)
+                record["sourceType"] = capture_kinds.get(row["id"], "THOUGHT")
                 record["tags"] = tags
                 record["snippet"] = self._snippet(row["original_text"], q_tokens)
                 record["matchReason"] = reason
@@ -1332,7 +1434,8 @@ class Vault:
                 (artifact_id, thought_id, artifact_type, _json(payload), _json(sources), provider, model, timestamp),
             )
             self._insert_event(
-                conn, "THOUGHT", thought_id, "AI_SUMMARY_GENERATED",
+                conn, "THOUGHT", thought_id,
+                "AI_INTERPRETATION_GENERATED" if artifact_type == "AI_INTERPRETATION" else "AI_SUMMARY_GENERATED",
                 {"artifactId": artifact_id, "artifactType": artifact_type, "provider": provider, "model": model},
                 timestamp, bool(thought["is_demo"]),
             )

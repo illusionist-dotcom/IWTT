@@ -182,3 +182,22 @@ Same rows, same order, cost proportional to the matches instead of to the corpus
   revisions, events and search-document maintenance), not a bulk loader. It is
   reported so the total cost of the experiment is visible, not because it is a recall
   number.
+
+## 7. Windows 11 verification run (2026-11-13)
+
+An additional run used the same fixed seed and 200-query suite on Windows 11 Pro,
+Python 3.12.10, SQLite 3.49.1. These figures are measured on that machine and are
+separate from the Linux results above; do not compare latency across the two hosts as
+if they were a controlled hardware comparison.
+
+| Thoughts | Insert time | Index build | Recall p95 / max | Peak process RSS | Candidate max | Ranking mismatches |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1,000 | 28.929 s | 2.046 s | 181.40 / 256.89 ms | 91.9 MB | 735 | 0 |
+| 10,000 | 324.427 s | 31.744 s | 585.54 / 682.53 ms | 279.6 MB | 970 | 0 |
+
+Both sizes passed their published index-build, latency, memory, and bounded-candidate
+budgets. The 10,000-thought initial insert took about 5.4 minutes on this host; that
+time is reported separately because the release budget covers derived-index build
+time, not synthetic corpus creation. Candidate work grew 1.32x while the vault grew
+10x, and the maximum examined fraction fell from 73.5% to 9.7%. Peak RSS is for the
+whole benchmark process, not just the graph.

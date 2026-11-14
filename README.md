@@ -23,6 +23,19 @@ IWTT_DATA_DIR="$HOME/my-iwtt-vault" python -m iwtt.server
 
 Default database: `~/.iwtt/thought-vault.sqlite3` (SQLite, WAL mode). Backups are kept in `~/.iwtt/backups/` and are also downloaded by the browser. The database is created on first run. See [PRIVACY.md](PRIVACY.md) before changing the bind address.
 
+## Launch as a Windows app
+
+For a no-install first run, double-click `Start-IWTT.cmd`. It starts IWTT locally and opens the interface in your browser; leave the terminal window open while using it, then press Ctrl+C to stop. The vault is stored in `%LOCALAPPDATA%\\IWTT`.
+
+To build a standalone Windows executable (Python is only needed on the build machine):
+
+```powershell
+python -m pip install pyinstaller
+powershell -ExecutionPolicy Bypass -File scripts/build_windows_app.ps1
+```
+
+Run `dist\\IWTT-Thought-Communities.exe`; it opens the app on a free loopback port and keeps the vault in `%LOCALAPPDATA%\\IWTT`. The executable is a local server plus browser UI, not an embedded browser window. The `--data-dir` option can select a different vault folder.
+
 ## What is new in v0.2
 
 - **FIND MY THOUGHT** — one search box that returns ranked candidates with the original text, why each one matched, its connections, and its lifecycle/time context. The text you wrote is rendered visually apart from every derived explanation of it.
@@ -31,7 +44,10 @@ Default database: `~/.iwtt/thought-vault.sqlite3` (SQLite, WAL mode). Backups ar
 - **Ambiguity refusal** — when several memories are equally likely IWTT says *"I found three likely memories"* and shows what distinguishes them, instead of picking one. When nothing matches, it says so and explains what that does and does not prove.
 - **Graph Intelligence** — bounded neighbourhood expansion, direction-aware traversal, hub suppression, and path finding that will not invent an edge to close a gap. `USER_CONFIRMED` and `AI_SUGGESTED` stay distinct everywhere, and searching never confirms a suggestion.
 - **Derived query memory** — IWTT learns which answers were useful, with a documented 180-day half-life, a corroboration gate, and hard clamping so negative feedback demotes but never hides. Inspectable and erasable in one action; never canonical.
-- **Connection Explorer V2** — derived clustering with stable identities, cohesion scores and authority labels, behind a clean `GraphViewModel` boundary that never holds the whole vault in memory.
+- **Community graph** — a clickable, bounded midnight graph with derived community filters and a selected-concept inspector for original text, source, lifecycle, tags, and relationship provenance. Dashed shared-concept links are transient visual hints, never saved relationships.
+- **Capture source labels** — `THOUGHT`, `IDEA`, `MESSAGE`, `PROMPT`, `IMPORTED`, and `AI_INTERPRETATION` distinguish what a record came from while its lifecycle remains independently `THOUGHT`, `EXPERIMENT`, `INVENTION`, or `PROJECT`. Source selection is recorded in canonical event history, preserving older SQLite schemas.
+- **In-app AI interpretation** — configure an OpenAI-compatible endpoint from Data & privacy, then explicitly request an interpretation. Generated concepts, questions, and next steps stay derived until you review and save an editable draft.
+- **Local file reading** — import plain text, Markdown, CSV, JSON, HTML, notes, and source code into an explicitly marked thought. The selected text becomes the immutable original capture; PDF and Word extraction are not included.
 - **Time and lifecycle recall** — `today`, `last week`, `past 3 months`, `recently`, `between X and Y`, `in 2024`, Graveyard inclusion — with inferred windows explicitly labelled `ESTIMATED_RANGE` rather than presented as precision IWTT does not have.
 - **External-knowledge foundation** — entity kinds, a closed ten-type vocabulary, a separate provenance vocabulary, guards that raise, and a documented cross-domain chain (`Thought → Experiment → Project → Source File → Function → Bug → Fix → New Thought`) whose deferred edges each name their blocker. Interfaces and documentation only: nothing is ingested.
 - **Measured performance** — recall p95 118 ms at 1,000 thoughts and 404 ms at 10,000, with the examined candidate set bounded by an absolute cap (73.5% of a 1,000-thought vault, 9.7% of a 10,000-thought one). See [BENCHMARKS.md](BENCHMARKS.md).
@@ -43,7 +59,7 @@ Default database: `~/.iwtt/thought-vault.sqlite3` (SQLite, WAL mode). Backups ar
 - Immutable original text plus editable current text/title, version snapshots, and a separate lifecycle type (`THOUGHT`, `EXPERIMENT`, `INVENTION`, `PROJECT`). Any type can move to any other type.
 - Tags; a non-destructive Graveyard and resurrection; persistent relationships with user-confirmed vs. AI-suggested provenance and explicit confirmation.
 - Local exact, substring, token, title/tag, fuzzy-word-form, and small transparent alias search. Results show the original text snippet. No embedding model is required.
-- Event timeline, revision history, a small derived SVG relationship graph, vault JSON export/import, Markdown export, and actual SQLite backup files.
+- Event timeline, revision history, a clickable derived SVG community graph, vault JSON export/import, Markdown export, and actual SQLite backup files.
 - Optional fictional demo records that can be removed separately.
 - Rebuildable local search documents and a `Delete all derived data` safety operation.
 - Optional AI provider boundary. No AI is configured by default. An OpenAI-compatible endpoint is contacted only after explicit configuration and an explicit AI action.
@@ -54,7 +70,9 @@ Default database: `~/.iwtt/thought-vault.sqlite3` (SQLite, WAL mode). Backups ar
 - **Vault / Search:** browse active items or search a fragment. Search includes the Graveyard by default.
 - **Thought detail:** inspect the original and current text separately; edit, promote, tag, connect, or inspect revisions/events.
 - **Graveyard:** items remain recoverable; resurrecting records a new event and retains the previous Graveyard timestamp.
-- **Connections:** browse saved relationships. Suggested links are visually marked and are not treated as confirmed until you press **Confirm**.
+- **Connections:** browse saved relationships. Suggested links are visually marked and are not treated as confirmed until you press **Confirm**. Add append-only, user-authored evidence notes to explain why a connection matters; notes appear in connection history and path results.
+- **Import a file:** choose a supported local text or source file, review a preview, and preserve its extracted text as an imported thought. File content is not silently rewritten or sent to AI. The optional AI summary remains an explicit, separate action.
+- **AI interpretation:** optionally configure a hosted OpenAI-compatible provider in Data & privacy. This uses IWTT's existing local app process; it does not require a second local server. Only the selected thought text is sent when you explicitly request interpretation. A provider account/key and network connection are required for hosted AI.
 - **Timeline:** explore dated lifecycle, edit, tag, and relationship events.
 - **Data & privacy:** export/import, backup, demo data, rebuild/delete derived data, and inspect local storage path.
 
@@ -122,7 +140,7 @@ Documentation lives at the **repository root**, not in a `docs/` directory:
 - **No AI and no network in the recall path.** `ai_required`, `network_required`, `embeddings_enabled` and `semantic_stage_enabled` are all `False`, and the No-AI default is unchanged.
 - **Scores are deterministic weighted sums, not probabilities.** A 13.75 out of a possible 21.25 is not "65% confident".
 - **Relationship edges enrich candidates; they never replace lexical evidence.** A thought with no word in common with your query cannot become a strong match by association.
-- **No external ingestion.** Repositories, source files, functions, bugs, PDFs and commits exist in v0.2 only as reserved vocabulary and documented design.
+- **No external-entity ingestion.** Local text/source files can be captured as clearly tagged imported thoughts. This build does not create repository/file/function entities, parse ASTs, or extract PDF/Word content.
 - **Clustering is automatic and derived**, labelled `AUTOMATICALLY_DISCOVERED_CLUSTER`, and never canonical truth.
 
 See each architecture and privacy document for more.

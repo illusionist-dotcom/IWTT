@@ -218,6 +218,8 @@ LINKS: list[tuple[int, int, str, str]] = [
 
 #: Indices that go to the Graveyard after creation.
 GRAVEYARD = {3}
+#: Indices that return from the Graveyard after an eventful pause.
+RESURRECTIONS = {19}
 #: Indices that get edited, so the revision history is real.
 EDITS = {
     0: "Enemies should remember how the player fights and adapt after three encounters. "
@@ -288,6 +290,9 @@ def build(data_dir: Path, *, fill: int = 0, seed_tags: bool = True) -> dict:
             vault.update_thought(thought["id"], thought_type=TYPE_CHANGES[index])
         if index in GRAVEYARD:
             vault.move_to_graveyard(thought["id"])
+        if index in RESURRECTIONS:
+            vault.move_to_graveyard(thought["id"])
+            vault.resurrect(thought["id"])
 
     for source, target, rel_type, provenance in LINKS:
         vault.create_relationship(created[source], created[target], rel_type, provenance=provenance)
@@ -310,14 +315,25 @@ def build(data_dir: Path, *, fill: int = 0, seed_tags: bool = True) -> dict:
         filler_created += 1
 
     stats = vault.stats()
+    resurrected = sum(
+        bool(thought["resurrectedAt"])
+        for thought in vault.list_thoughts(status="ALL")
+    )
+    export_path = data_dir / "canonical-export.json"
+    export_path.write_text(
+        json.dumps(vault.export_vault(include_derived=False), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     report = {
         "dataDir": str(data_dir),
         "database": str(vault.db_path),
+        "canonicalExport": str(export_path),
         "handAuthoredThoughts": len(created),
         "fillerThoughts": filler_created,
         "relationships": stats["relationships"],
         "suggestedRelationships": stats["suggestedRelationships"],
         "graveyardThoughts": stats["graveyardThoughts"],
+        "resurrectedThoughts": resurrected,
         "tags": stats["tags"],
         "revisions": stats["revisions"],
         "events": stats["events"],
@@ -360,6 +376,7 @@ def main() -> int:
           f"({report['suggestedRelationships']} still unconfirmed AI suggestions)")
     print(f"  graveyard / tags / revisions / events : "
           f"{report['graveyardThoughts']} / {report['tags']} / {report['revisions']} / {report['events']}")
+    print(f"  thoughts with resurrection history : {report['resurrectedThoughts']}")
     print(f"  canonical fingerprint  : {report['canonicalFingerprint']}")
     print("\nRun it with:")
     print(f"  python3 -m iwtt.server --data-dir {report['dataDir']}")

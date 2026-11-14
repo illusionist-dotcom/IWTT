@@ -6,6 +6,7 @@ import json
 import sqlite3
 import sys
 import tempfile
+from contextlib import closing
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -110,7 +111,7 @@ def main() -> None:
         check(restarted.search("enemy adapting to player")[0]["id"] == adaptive["id"], "search did not rebuild after restart")
 
         backup_path = restarted.backup()
-        with sqlite3.connect(backup_path) as backup_db:
+        with closing(sqlite3.connect(backup_path)) as backup_db:
             check(backup_db.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "backup integrity check failed")
             backup_thoughts = backup_db.execute("SELECT COUNT(*) FROM thoughts").fetchone()[0]
         check(backup_thoughts == 3, "backup omitted thoughts")

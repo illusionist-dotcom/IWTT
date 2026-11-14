@@ -22,13 +22,15 @@ like the rest of IWTT.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import gc
 import json
+import os
 import random
-import resource
 import shutil
 import statistics
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -129,6 +131,45 @@ def make_queries(rng: random.Random, count: int) -> list[str]:
 
 
 def peak_rss_mb() -> float:
+    if os.name == "nt":
+        from ctypes import wintypes
+
+        class ProcessMemoryCounters(ctypes.Structure):
+            _fields_ = [
+                ("cb", wintypes.DWORD),
+                ("PageFaultCount", wintypes.DWORD),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        counters = ProcessMemoryCounters()
+        counters.cb = ctypes.sizeof(counters)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        get_current_process = kernel32.GetCurrentProcess
+        get_current_process.restype = wintypes.HANDLE
+        get_current_process.argtypes = []
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        get_memory_info = psapi.GetProcessMemoryInfo
+        get_memory_info.restype = wintypes.BOOL
+        get_memory_info.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(ProcessMemoryCounters),
+            wintypes.DWORD,
+        ]
+        if not get_memory_info(
+            get_current_process(), ctypes.byref(counters), counters.cb
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return counters.PeakWorkingSetSize / (1024.0 * 1024.0)
+
+    import resource
+
     usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     # Linux reports kilobytes, macOS bytes.  Normalise so the number means MB.
     return usage / 1024.0 if sys.platform != "darwin" else usage / (1024.0 * 1024.0)
@@ -179,8 +220,10 @@ def build_vault(data_dir: Path, count: int, seed: int) -> tuple[Vault, dict]:
 
 
 def run_benchmark(count: int, query_count: int, data_dir: Path, seed: int) -> dict:
-    if data_dir.exists():
-        shutil.rmtree(data_dir)
+    if data_dir.exists() and (
+        not data_dir.is_dir() or any(data_dir.iterdir())
+    ):
+        raise FileExistsError(f"Refusing to overwrite benchmark data at {data_dir}")
     data_dir.mkdir(parents=True, exist_ok=True)
 
     gc.collect()
@@ -381,7 +424,8 @@ def main() -> int:
     parser.add_argument("--queries", type=int, default=200, help="queries to run")
     parser.add_argument("--seed", type=int, default=20261016, help="corpus seed")
     parser.add_argument("--data-dir", default="", help="where to build the vault")
-    parser.add_argument("--keep", action="store_true", help="keep the vault afterwards")
+    parser.add_argument("--keep", action="store_true",
+                        help="keep the vault (requires a new --data-dir)")
     parser.add_argument("--suite", action="store_true",
                         help="run the mission's 1k and 10k checks together")
     args = parser.parse_args()
@@ -389,15 +433,19 @@ def main() -> int:
     counts = [1_000, 10_000] if args.suite else [args.count]
     reports = []
     for count in counts:
-        data_dir = (
-            Path(args.data_dir) if args.data_dir and not args.suite
-            else Path(f"/tmp/iwtt-benchmark-{count}")
-        )
-        report = run_benchmark(count, args.queries, data_dir, args.seed)
-        report["dataDir"] = str(data_dir)
+        explicit_dir = Path(args.data_dir) if args.data_dir and not args.suite else None
+        if explicit_dir is not None:
+            if explicit_dir.exists():
+                raise FileExistsError(f"Refusing to overwrite benchmark data at {explicit_dir}")
+            report = run_benchmark(count, args.queries, explicit_dir, args.seed)
+            report["dataDir"] = str(explicit_dir) if args.keep else None
+            if not args.keep:
+                shutil.rmtree(explicit_dir)
+        else:
+            with tempfile.TemporaryDirectory(prefix=f"iwtt-benchmark-{count}-") as temp:
+                report = run_benchmark(count, args.queries, Path(temp), args.seed)
+            report["dataDir"] = None
         reports.append(report)
-        if not args.keep:
-            shutil.rmtree(data_dir, ignore_errors=True)
 
     if len(reports) > 1:
         compare_scaling(reports)

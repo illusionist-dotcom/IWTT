@@ -2,6 +2,11 @@
 
 Four gates, run in this order. All four are green in the current tree.
 
+The suite and release scripts also run on Windows. Test SQLite connections are
+explicitly closed before temporary directories are removed, and source-inspection
+tests decode UTF-8 explicitly rather than relying on the host ANSI code page. Windows
+11 performance measurements are recorded separately in `BENCHMARKS.md`.
+
 ```bash
 python -m unittest discover -s tests -v        # gate 1 — 131 tests
 python scripts/verify_release.py               # gate 2 — the v0.1 contract

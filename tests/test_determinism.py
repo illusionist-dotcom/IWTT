@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from iwtt.store import Vault
+from sqlite_helpers import connect_sqlite
 
 QUERIES = [
     "enemies should remember how the player fights",
@@ -257,7 +258,7 @@ class DeterminismTestCase(unittest.TestCase):
         # indistinguishable to every signal, so only the tie-break chain remains.
         second = vault.create_thought(CORPUS[0][0], CORPUS[0][1], CORPUS[0][2],
                                       list(CORPUS[0][3]))["id"]
-        with sqlite3.connect(path) as conn:
+        with connect_sqlite(path) as conn:
             stamp = conn.execute(
                 "SELECT created_at FROM thoughts WHERE id=?", (first,)
             ).fetchone()[0]

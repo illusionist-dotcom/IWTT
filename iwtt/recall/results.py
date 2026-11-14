@@ -195,6 +195,7 @@ class RelationshipContext:
 @dataclass
 class RecallResult:
     thought_id: str
+    source_type: str
     title: str
     display_title: str
     snippet: str
@@ -234,6 +235,7 @@ class RecallResult:
         data: dict[str, Any] = {
             "id": self.thought_id,
             "thoughtId": self.thought_id,
+            "sourceType": self.source_type,
             "title": self.title,
             "displayTitle": self.display_title,
             "snippet": self.snippet,

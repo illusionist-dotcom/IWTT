@@ -26,7 +26,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
-from ..store import Vault, _display_title
+from ..store import Vault, _display_title, _json_load
 from .config import DEFAULT_CONFIG, RecallConfig, direction_label, is_symmetric, relationship_weight
 from .expansion import connection_display, provenance_weight
 from .text import sanitize_label
@@ -87,7 +87,7 @@ def _live_edges_for(conn: sqlite3.Connection, thought_ids: Sequence[str]) -> dic
         chunk = ids[start : start + 400]
         marks = ",".join("?" for _ in chunk)
         for row in conn.execute(
-            f"SELECT id, source_id, target_id, type, status, provenance, created_at "
+            f"SELECT id, source_id, target_id, type, status, provenance, created_at, metadata_json "
             f"FROM relationships WHERE status IN ('CONFIRMED','SUGGESTED') "
             f"AND (source_id IN ({marks}) OR target_id IN ({marks})) "
             f"ORDER BY type, created_at, id",
@@ -96,12 +96,23 @@ def _live_edges_for(conn: sqlite3.Connection, thought_ids: Sequence[str]) -> dic
             entry = (
                 row["id"], row["source_id"], row["target_id"], row["type"],
                 row["status"], row["provenance"], row["created_at"],
+                _relationship_evidence_notes(row["metadata_json"]),
             )
             adjacency.setdefault(row["source_id"], []).append(entry)
             adjacency.setdefault(row["target_id"], []).append(entry)
     for key in adjacency:
         adjacency[key].sort(key=lambda item: (item[3], item[6], item[0]))
     return adjacency
+
+
+def _relationship_evidence_notes(metadata_json: str) -> list[dict[str, Any]]:
+    metadata = _json_load(metadata_json)
+    if not isinstance(metadata, dict):
+        return []
+    notes = metadata.get("evidenceNotes", [])
+    if not isinstance(notes, list):
+        return []
+    return [note for note in notes if isinstance(note, dict) and note.get("kind") == "USER_AUTHORED_NOTE"]
 
 
 def _node_records(conn: sqlite3.Connection, thought_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
@@ -174,7 +185,7 @@ def find_path(
             next_frontier: list[str] = []
             for node in frontier:
                 for edge in adjacency.get(node, ()):
-                    rel_id, source, target, rel_type, status, provenance, created_at = edge
+                    rel_id, source, target, rel_type, status, provenance, created_at, evidence_notes = edge
                     if source == node:
                         other, direction = target, "OUT"
                     else:
@@ -239,7 +250,7 @@ def find_path(
         edges: list[dict[str, Any]] = []
         provenance_summary: dict[str, int] = {}
         for _node_id, edge in chain:
-            rel_id, source, target, rel_type, status, provenance, created_at, direction = edge
+            rel_id, source, target, rel_type, status, provenance, created_at, evidence_notes, direction = edge
             edges.append({
                 "relationshipId": rel_id,
                 "sourceId": source,
@@ -252,6 +263,7 @@ def find_path(
                 "display": connection_display(provenance, status),
                 "symmetric": is_symmetric(rel_type),
                 "createdAt": created_at,
+                "evidenceNotes": evidence_notes,
                 "weight": round(
                     provenance_weight(provenance, status, config) * relationship_weight(rel_type), 4
                 ),
@@ -301,7 +313,7 @@ def lineage(
                 next_frontier: list[str] = []
                 for node in sorted(frontier):
                     for edge in adjacency.get(node, ()):
-                        rel_id, source, target, rel_type, status, provenance, created_at = edge
+                        rel_id, source, target, rel_type, status, provenance, created_at, evidence_notes = edge
                         if source == node:
                             other, direction = target, "OUT"
                         else:
@@ -323,6 +335,7 @@ def lineage(
                             "display": connection_display(provenance, status),
                             "depth": depth + 1,
                             "relationshipCreatedAt": created_at,
+                            "evidenceNotes": evidence_notes,
                         })
                 if records:
                     node_records = _node_records(conn, [item["thoughtId"] for item in records])
@@ -343,7 +356,7 @@ def lineage(
             next_frontier = []
             for node in sorted(frontier):
                 for edge in adjacency.get(node, ()):
-                    rel_id, source, target, rel_type, status, provenance, created_at = edge
+                    rel_id, source, target, rel_type, status, provenance, created_at, evidence_notes = edge
                     if target == node and source not in seen:
                         seen.add(source)
                         next_frontier.append(source)
@@ -353,6 +366,7 @@ def lineage(
                             "provenance": provenance, "status": status,
                             "display": connection_display(provenance, status),
                             "depth": depth + 1, "relationshipCreatedAt": created_at,
+                            "evidenceNotes": evidence_notes,
                         })
             if records:
                 node_records = _node_records(conn, [item["thoughtId"] for item in records])

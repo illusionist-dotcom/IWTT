@@ -32,7 +32,7 @@ from difflib import SequenceMatcher
 from functools import lru_cache
 from typing import Any, Sequence
 
-from ..store import Vault, _display_title, tokenize
+from ..store import Vault, _capture_kind_map, _display_title, tokenize
 from .config import DEFAULT_CONFIG, RecallConfig
 from .results import Explanation, MatchState, OutcomeState, RecallResult, SignalScores
 from .text import (
@@ -150,6 +150,7 @@ class Candidate:
     resurrected_at: str | None = None
     is_demo: bool = False
     degree: int = 0
+    source_type: str = "THOUGHT"
     tags: tuple[str, ...] = ()
     trigram_similarity: float = 0.0
     trigram_shared: int = 0
@@ -257,6 +258,11 @@ def load_candidates(vault: Vault, thought_ids: Sequence[str]) -> dict[str, Candi
                     is_demo=bool(row["is_demo"]),
                     degree=int(row["degree"] or 0),
                 )
+            capture_kinds = _capture_kind_map(conn, chunk)
+            for thought_id in chunk:
+                candidate = out.get(thought_id)
+                if candidate is not None:
+                    candidate.source_type = capture_kinds.get(thought_id, "THOUGHT")
             for row in conn.execute(
                 f"SELECT tt.thought_id AS thought_id, t.name AS name FROM thought_tags tt "
                 f"JOIN tags t ON t.id = tt.tag_id WHERE tt.thought_id IN ({marks}) "
@@ -1056,6 +1062,7 @@ def make_result(
 ) -> RecallResult:
     return RecallResult(
         thought_id=candidate.thought_id,
+        source_type=candidate.source_type,
         title=candidate.title,
         display_title=candidate.display_title,
         snippet=recall_snippet(candidate.original_text, analysis.effective or analysis.raw),

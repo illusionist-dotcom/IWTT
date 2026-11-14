@@ -1,5 +1,7 @@
 # GRAPH INTELLIGENCE (IWTT v0.2)
 
+The Connections view uses a dark graph workspace and community rail inspired by Graphify Cloud's clickable concept graph. Each displayed node resolves to one canonical thought. Community colors, regions, and screen positions are disposable derived presentation; clicking a node opens the original thought and its source badge. The rail filters by IWTT's deterministic, locally rebuilt community assignment. Solid arrows retain saved relationship direction and provenance; dashed links are transient shared-concept hints.
+
 How IWTT uses the relationships **you** stored to enrich recall, explore connections,
 find paths, and discover groupings — without ever letting a derived graph opinion
 overwrite what a relationship actually is.
@@ -44,6 +46,16 @@ relationship the user deleted.
 ---
 
 ## 2. Edge semantics
+
+### User-authored relationship evidence notes
+
+Following the useful source-evidence pattern found in the current Graphify audit, a saved IWTT relationship can now carry multiple append-only `USER_AUTHORED_NOTE` entries in its existing canonical `metadata_json`. Each note has a durable ID, text, and timestamp; adding one also writes a canonical `RELATIONSHIP_EVIDENCE_NOTE_ADDED` event. Notes appear in the thought connection panel, history, and discovered path output. They are the user's explanation/context, not machine-verified proof and not an AI confidence value. No schema migration is needed; existing `metadata.note` remains supported as the original single connection note. Removed links cannot receive new evidence notes; existing notes and events remain part of history.
+
+GraphViewModel and recall ranking do not use these notes as new semantic evidence. This keeps graph exploration explainable while avoiding an unreviewed change to search semantics.
+
+### Community graph hints
+
+The clickable Connections graph uses the bounded `GraphViewModel` and its deterministic relationship communities. It derives a small, transient keyword list from each node's current text, then draws a limited set of dashed shared-concept links to help reveal nearby ideas. Those links, keyword hints, colors, and positions are browser/view data: they are not inserted into `relationships`, do not affect recall ranking, and are not exported as canonical truth. Saved relationships remain directional arrows and retain their stored provenance.
 
 `config.RELATIONSHIP_SEMANTICS` gives each of v0.1's 11 relationship types a
 direction, a weight, and human phrasing for both directions:

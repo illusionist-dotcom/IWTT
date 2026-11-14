@@ -13,14 +13,17 @@ import logging
 import mimetypes
 import os
 import re
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .ai import AIUnavailable, provider_from_environment
-from .store import APP_VERSION, ConflictError, ValidationError, Vault
+from .ai import AIUnavailable, NoAIProvider, OpenAICompatibleProvider, provider_from_environment
+from .store import APP_VERSION, ConflictError, RELATIONSHIP_TYPES, ValidationError, Vault
 
-ROOT = Path(__file__).resolve().parents[1]
+# PyInstaller one-file builds extract bundled files under ``_MEIPASS``.
+# In source runs, keep resolving the repository root as before.
+ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
 WEB_ROOT = ROOT / "web"
 MAX_REQUEST_BYTES = 20 * 1024 * 1024
 LOG = logging.getLogger("iwtt")
@@ -173,13 +176,15 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "available": bool(getattr(provider, "available", False)),
                 "provider": getattr(provider, "name", "NoAIProvider"),
                 "model": getattr(provider, "model", None),
-                "boundary": "No thoughts leave this machine unless an endpoint is explicitly configured and an AI action is invoked.",
+                "source": getattr(provider, "source", "environment" if getattr(provider, "available", False) else "disabled"),
+                "boundary": "AI is optional. Text is sent only to the explicitly configured endpoint when an AI action is invoked. Runtime credentials are held in memory and never exported.",
             })
             return
         if path == "/api/thoughts":
             status = query.get("status", ["ACTIVE"])[0]
             thought_type = query.get("type", [None])[0]
-            self._send_json(200, {"thoughts": self.vault.list_thoughts(status, thought_type)})
+            source_type = query.get("source_type", [None])[0]
+            self._send_json(200, {"thoughts": self.vault.list_thoughts(status, thought_type, source_type)})
             return
         if path == "/api/search":
             q = query.get("q", [""])[0]
@@ -350,6 +355,33 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._error(exc)
 
     def _post_api(self, path: str, payload) -> None:
+        if path == "/api/ai/configure":
+            if not isinstance(payload, dict):
+                raise ValidationError("Request body must be an object")
+            if payload.get("enabled") is False:
+                self.vault.ai_provider = NoAIProvider()
+                self.vault.ai_provider.source = "disabled"
+                self._send_json(200, {"available": False, "provider": "NoAIProvider", "model": None, "source": "disabled"})
+                return
+            base_url = payload.get("baseUrl")
+            model = payload.get("model")
+            api_key = payload.get("apiKey")
+            if not all(isinstance(value, str) for value in (base_url, model, api_key)):
+                raise ValidationError("Endpoint, model and API key must be text")
+            base_url, model, api_key = base_url.strip(), model.strip(), api_key.strip()
+            parsed = urlparse(base_url)
+            host = (parsed.hostname or "").lower()
+            loopback = host in {"localhost", "127.0.0.1", "::1"}
+            if parsed.scheme != "https" and not (parsed.scheme == "http" and loopback):
+                raise ValidationError("Use HTTPS for hosted providers; HTTP is allowed only for a loopback endpoint")
+            if parsed.username or parsed.password or parsed.query or parsed.fragment or not parsed.hostname:
+                raise ValidationError("Endpoint URL must not contain credentials, query parameters or fragments")
+            if len(base_url) > 500 or not model or len(model) > 120 or len(api_key) > 1000:
+                raise ValidationError("Endpoint, model or API key is too long")
+            self.vault.ai_provider = OpenAICompatibleProvider(base_url, model, api_key or None)
+            self.vault.ai_provider.source = "runtime"
+            self._send_json(200, {"available": True, "provider": self.vault.ai_provider.name, "model": model, "source": "runtime"})
+            return
         if path == "/api/thoughts":
             if not isinstance(payload, dict):
                 raise ValidationError("Request body must be an object")
@@ -358,6 +390,29 @@ class RequestHandler(BaseHTTPRequestHandler):
                 payload.get("type", "THOUGHT"),
                 payload.get("title", ""),
                 payload.get("tags", []),
+                source_type=payload.get("sourceType", "THOUGHT"),
+            )
+            self._send_json(201, {"thought": thought})
+            return
+        if path == "/api/files/import":
+            if not isinstance(payload, dict):
+                raise ValidationError("Request body must be an object")
+            filename = payload.get("filename")
+            text = payload.get("text")
+            if not isinstance(filename, str):
+                raise ValidationError("filename must be text")
+            filename = re.split(r"[/\\\\]", filename.strip())[-1]
+            suffix = Path(filename).suffix.lower()
+            allowed = {".txt", ".text", ".md", ".markdown", ".rst", ".csv", ".tsv", ".json", ".html", ".htm", ".xml", ".yaml", ".yml", ".toml", ".ini", ".log", ".py", ".js", ".jsx", ".ts", ".tsx", ".css", ".sql", ".c", ".h", ".cpp", ".java", ".go", ".rs", ".sh", ".ps1"}
+            if not filename or len(filename) > 240 or suffix not in allowed:
+                raise ValidationError("Choose a supported text or source file")
+            if not isinstance(text, str) or not text.strip():
+                raise ValidationError("The selected file contains no readable text")
+            if len(text) > 200_000:
+                raise ValidationError("Files must contain 200,000 characters or fewer")
+            thought = self.vault.create_thought(
+                text, "THOUGHT", str(payload.get("title") or filename)[:200], ["imported-file"],
+                {"kind": "FILE_IMPORT", "fileName": filename}, source_type="IMPORTED",
             )
             self._send_json(201, {"thought": thought})
             return
@@ -368,6 +423,15 @@ class RequestHandler(BaseHTTPRequestHandler):
                 payload.get("sourceId"), payload.get("targetId"),
                 payload.get("type", "RELATED_TO"), payload.get("provenance", "USER_CONFIRMED"),
                 payload.get("metadata", {}),
+            )
+            self._send_json(201, {"relationship": relationship})
+            return
+        evidence_match = re.fullmatch(r"/api/relationships/([^/]+)/evidence-notes", path)
+        if evidence_match:
+            if not isinstance(payload, dict):
+                raise ValidationError("Request body must be an object")
+            relationship = self.vault.add_relationship_evidence_note(
+                evidence_match.group(1), payload.get("text")
             )
             self._send_json(201, {"relationship": relationship})
             return
@@ -389,7 +453,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         if path == "/api/demo/seed":
             self._send_json(201, self.vault.seed_demo())
             return
-        thought_match = re.fullmatch(r"/api/thoughts/([^/]+)/(graveyard|resurrect|tags|ai/summary)", path)
+        thought_match = re.fullmatch(r"/api/thoughts/([^/]+)/(graveyard|resurrect|tags|ai/summary|ai/interpret|ai/relationships)", path)
         if thought_match:
             thought_id, action = thought_match.groups()
             if action == "graveyard":
@@ -414,6 +478,78 @@ class RequestHandler(BaseHTTPRequestHandler):
                     provider.name, getattr(provider, "model", None), [thought_id],
                 )
                 self._send_json(201, {"artifact": artifact})
+                return
+            if action == "ai/interpret":
+                provider = self.vault.ai_provider
+                if not getattr(provider, "available", False):
+                    raise AIUnavailable("Configure an AI provider in Data & privacy before interpretation.")
+                thought = self.vault.get_thought(thought_id)
+                interpretation = provider.interpret(thought)
+                artifact = self.vault.save_derived_artifact(
+                    thought_id, "AI_INTERPRETATION", interpretation,
+                    provider.name, getattr(provider, "model", None), [thought_id],
+                )
+                self._send_json(201, {"artifact": artifact})
+                return
+            if action == "ai/relationships":
+                provider = self.vault.ai_provider
+                if not getattr(provider, "available", False):
+                    raise AIUnavailable("Configure an AI provider in Data & privacy before checking for connections.")
+                thought = self.vault.get_thought(thought_id)
+                query = str(thought.get("currentText") or thought.get("originalText") or "")[:1200]
+                ranked = self.vault.search(query, include_graveyard=True, limit=60)
+                existing_pairs: set[str] = set()
+                for relation in thought.get("relationships", []):
+                    if relation.get("status") in {"CONFIRMED", "SUGGESTED"}:
+                        other_id = relation.get("targetId") if relation.get("sourceId") == thought_id else relation.get("sourceId")
+                        if other_id:
+                            existing_pairs.add(other_id)
+                candidates: list[dict] = []
+                candidate_ids: set[str] = set()
+                for candidate in ranked:
+                    candidate_id = candidate.get("id")
+                    if not candidate_id or candidate_id == thought_id or candidate_id in existing_pairs or candidate_id in candidate_ids:
+                        continue
+                    candidate_ids.add(candidate_id)
+                    candidates.append(candidate)
+                    if len(candidates) == 12:
+                        break
+                if len(candidates) < 12:
+                    for candidate in self.vault.list_thoughts("ALL"):
+                        candidate_id = candidate.get("id")
+                        if not candidate_id or candidate_id == thought_id or candidate_id in existing_pairs or candidate_id in candidate_ids:
+                            continue
+                        candidate_ids.add(candidate_id)
+                        candidate["candidateReason"] = "Recent vault context"
+                        candidates.append(candidate)
+                        if len(candidates) == 12:
+                            break
+                if not candidates:
+                    self._send_json(200, {
+                        "suggestions": [], "examinedCount": 0,
+                        "provider": provider.name, "model": getattr(provider, "model", None),
+                    })
+                    return
+                suggestions = provider.suggest_relationships(thought, candidates)
+                candidate_by_id = {item["id"]: item for item in candidates}
+                results = []
+                for suggestion in suggestions:
+                    target_id = suggestion.get("targetId")
+                    candidate = candidate_by_id.get(target_id)
+                    if not candidate or suggestion.get("type") not in RELATIONSHIP_TYPES:
+                        continue
+                    results.append({
+                        "targetId": target_id,
+                        "targetTitle": candidate.get("displayTitle") or candidate.get("title") or "Untitled thought",
+                        "targetSourceType": candidate.get("sourceType", "THOUGHT"),
+                        "targetStatus": candidate.get("status", "ACTIVE"),
+                        "type": suggestion["type"],
+                        "reason": suggestion["reason"],
+                    })
+                self._send_json(200, {
+                    "suggestions": results, "examinedCount": len(candidates),
+                    "provider": provider.name, "model": getattr(provider, "model", None),
+                })
                 return
         relationship_match = re.fullmatch(r"/api/relationships/([^/]+)/confirm", path)
         if relationship_match:

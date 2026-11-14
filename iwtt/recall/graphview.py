@@ -17,9 +17,10 @@ them into thoughts** — see EXTERNAL_KNOWLEDGE_ARCHITECTURE.md.
 from __future__ import annotations
 
 import sqlite3
+import re
 from typing import Any, Sequence
 
-from ..store import Vault, _display_title
+from ..store import Vault, _capture_kind_map, _display_title
 from .clusters import cluster_summary
 from .config import RecallConfig, direction_label, is_symmetric, relationship_weight
 from .expansion import connection_display, provenance_weight
@@ -31,6 +32,26 @@ from .text import sanitize_label
 #: implemented.
 ENTITY_THOUGHT = "THOUGHT_ENTITY"
 ENTITY_EXTERNAL = "EXTERNAL_KNOWLEDGE_ENTITY"
+
+_CONCEPT_STOP_WORDS = frozenset(
+    "a an and are as at be been before being between both but by can could did do does "
+    "doing down during each for from further had has have having he her here hers him his "
+    "how i if in into is it its itself just me more most my no nor not of off on once only "
+    "or other our out over own same she should so some such than that the their them then "
+    "there these they this those through to too under until up very was we were what when "
+    "where which while who why will with would you your idea thought project thing things "
+    "using make made build built file files document source world new use one two also".split()
+)
+
+
+def _concept_keywords(text: str, limit: int = 16) -> list[str]:
+    """Small transient concept hints for the visual graph; never persisted."""
+    terms = re.findall(r"[a-z][a-z0-9_-]{2,}", (text or "").casefold())
+    counts: dict[str, int] = {}
+    for term in terms:
+        if term not in _CONCEPT_STOP_WORDS:
+            counts[term] = counts.get(term, 0) + 1
+    return sorted(counts, key=lambda term: (-counts[term], term))[:limit]
 
 
 def build_graph_view_model(
@@ -86,6 +107,7 @@ def build_graph_view_model(
             f"FROM thoughts{status_clause} ORDER BY id",
         )
         thoughts = {row["id"]: row for row in thought_rows}
+        capture_kinds = _capture_kind_map(conn, list(thoughts))
 
         if root_ids:
             selected, reachable = _select_by_roots(
@@ -137,10 +159,14 @@ def build_graph_view_model(
                 "displayLabel": sanitize_label(
                     _display_title(row["title"] or "", row["current_text"] or row["original_text"]), 90
                 ),
+                "concepts": _concept_keywords(
+                    f"{row['title'] or ''} {row['current_text'] or row['original_text']}"
+                ),
                 #: The entity boundary.  v0.2 only ever emits THOUGHT_ENTITY;
                 #: the field exists so external knowledge can be added later
                 #: without a thought ever being silently reinterpreted.
                 "entityType": ENTITY_THOUGHT,
+                "sourceType": capture_kinds.get(thought_id, "THOUGHT"),
                 "lifecycleState": row["type"],
                 "status": row["status"],
                 "createdAt": row["created_at"],
@@ -193,12 +219,12 @@ def build_graph_view_model(
         #: Published so a renderer can style them differently and so a reviewer can
         #: check the boundary without reading the source.
         "canonicalFields": [
-            "id", "displayLabel", "lifecycleState", "status", "createdAt", "isDemo",
+            "id", "displayLabel", "lifecycleState", "sourceType", "status", "createdAt", "isDemo",
             "edges.type", "edges.provenance", "edges.status", "edges.source", "edges.target",
         ],
         "derivedFields": [
             "degree", "hubFactor", "importance", "isHub", "clusterId", "clusterLabel",
-            "clusterAuthority", "edges.weight", "edges.label", "edges.reverseLabel",
+            "clusterAuthority", "concepts", "edges.weight", "edges.label", "edges.reverseLabel",
             "edges.display", "edges.symmetric", "nodeCount", "edgeCount", "bounds",
         ],
         "entityKinds": {

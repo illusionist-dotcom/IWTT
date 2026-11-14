@@ -7,7 +7,7 @@ Use **Data & privacy → Export canonical JSON**. The downloaded file is an `iwt
 - thoughts (including original/current text, lifecycle, timestamps, and demo marker)
 - every revision snapshot
 - tag vocabulary and thought/tag assignments
-- relationships (IDs, endpoints, type, provenance, status, confirmation metadata)
+- relationships (IDs, endpoints, type, provenance, status, confirmation metadata, user-authored evidence notes)
 - events and event metadata
 
 Search documents and AI artifacts are derived and are excluded from the normal export. The API can include derived artifacts separately with `GET /api/data/export.json?include_derived=1`; import remains focused on canonical data and rebuilds its local search index.

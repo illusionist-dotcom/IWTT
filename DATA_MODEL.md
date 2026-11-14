@@ -39,7 +39,7 @@ Tags have UUIDs, display `name`, normalized unique name, timestamp, and demo mar
 | `provenance` | `USER_CONFIRMED` or `AI_SUGGESTED`, preserving origin. |
 | `status` | `SUGGESTED`, `CONFIRMED`, or `REMOVED`. |
 | `confirmed_at`, `confirmed_by` | Confirmation audit. AI proposals are not confirmed until a user action sets status and records `USER`. |
-| `metadata_json` | Optional note/context. |
+| `metadata_json` | Optional note/context plus append-only user-authored evidence notes (`evidenceNotes`). Each evidence note has its own ID, text, and timestamp. Existing vaults using only `note` remain valid. |
 | timestamps / `is_demo` | Creation/update time and explicit demo marker. |
 
 Removed relationships are retained with `REMOVED` status and history rather than physically deleted.
@@ -47,6 +47,8 @@ Removed relationships are retained with `REMOVED` status and history rather than
 ### Event (`events`)
 
 Events have UUID, target object ID and type, event type, UTC timestamp, JSON metadata, and demo marker. Event records explain how current state was reached; see [EVENT_MODEL.md](EVENT_MODEL.md).
+
+Thought creation events also record the user's `captureKind` (`THOUGHT`, `IDEA`, `MESSAGE`, `PROMPT`, `IMPORTED`, or `AI_INTERPRETATION`). This is source provenance, separate from the lifecycle `type` on the Thought row. Existing records without this event field display as `THOUGHT`; file import filename metadata remains on the same canonical creation event. This adds no SQLite column and survives canonical JSON export/import with event history.
 
 ## Derived tables
 
@@ -106,3 +108,7 @@ No embedding, graph coordinate, cluster assignment, or layout coordinate is stor
 `displayTitle`, search snippets/ranks, and graph positions are UI-derived and are not part of canonical JSON. If requested, AI artifacts are placed under a separate optional top-level `derived` section.
 
 **The canonical export schema version is still 1.** `export_vault(include_derived=True)` adds a separate optional `derived.recall` section holding index statistics — counts and build state, not memory. Recall scores, ranks, explanations, clusters, graph caches and query-outcome memory are never canonical and are never required for a faithful restore.
+
+## Local file capture
+
+Explicit file imports preserve the extracted text as the thought's immutable `original_text`. The source basename is recorded in the `THOUGHT_CREATED` event metadata and an `imported-file` tag marks the record. No additional table or schema migration is used. Imported content remains a thought capture; it does not represent an indexed external file entity.
