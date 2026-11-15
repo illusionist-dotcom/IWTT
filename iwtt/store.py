@@ -48,6 +48,14 @@ RELATIONSHIP_TYPES = {
 }
 RELATIONSHIP_PROVENANCE = {"USER_CONFIRMED", "AI_SUGGESTED"}
 RELATIONSHIP_STATUSES = {"SUGGESTED", "CONFIRMED", "REMOVED"}
+#: Which canonical event records that a derived AI artifact was generated.
+#: The event records that the action happened; it never carries the meaning of
+#: the artifact, and deleting the artifact does not erase the event.
+ARTIFACT_EVENT_TYPES = {
+    "AI_SUMMARY": "AI_SUMMARY_GENERATED",
+    "AI_INTERPRETATION": "AI_INTERPRETATION_GENERATED",
+    "AI_LINK_ANALYSIS": "AI_LINK_ANALYSIS_GENERATED",
+}
 CAPTURE_KINDS = {"THOUGHT", "IDEA", "MESSAGE", "PROMPT", "IMPORTED", "AI_INTERPRETATION"}
 TOKEN_ALIASES = {
     "adapt": {"adjust", "change", "learn", "evolve"},
@@ -1123,6 +1131,7 @@ class Vault:
             "RELATIONSHIP_EVIDENCE_NOTE_ADDED": "User-authored evidence note added to a connection",
             "AI_SUMMARY_GENERATED": "AI summary generated (derived)",
             "AI_INTERPRETATION_GENERATED": "AI interpretation generated (derived)",
+            "AI_LINK_ANALYSIS_GENERATED": "AI link analysis generated (derived, reviewable)",
         }
         return labels.get(event_type, event_type.replace("_", " ").title())
 
@@ -1435,7 +1444,7 @@ class Vault:
             )
             self._insert_event(
                 conn, "THOUGHT", thought_id,
-                "AI_INTERPRETATION_GENERATED" if artifact_type == "AI_INTERPRETATION" else "AI_SUMMARY_GENERATED",
+                ARTIFACT_EVENT_TYPES.get(artifact_type, "AI_SUMMARY_GENERATED"),
                 {"artifactId": artifact_id, "artifactType": artifact_type, "provider": provider, "model": model},
                 timestamp, bool(thought["is_demo"]),
             )
@@ -2169,6 +2178,36 @@ class Vault:
     def clusters(self) -> list[dict[str, Any]]:
         """Automatically discovered, DERIVED groupings (never canonical)."""
         return self._recall_engine().clusters()
+
+    def link_candidates(
+        self,
+        thought_id: str,
+        *,
+        limit: int = 16,
+    ) -> list[dict[str, Any]]:
+        """Structurally diverse candidates for an explicit link review.
+
+        The pool is drawn from five sources — lexical, graph, community, tag
+        and lifecycle — and interleaved, so an AI review is not confined to
+        thoughts that share words with the source.  Derived and AI-free: it
+        reads canonical data and the rebuildable indexes, and it calls no
+        provider.
+        """
+        from .recall.candidates import select_candidates
+
+        thought = self.get_thought(thought_id)
+        return select_candidates(self, thought, limit=limit)
+
+    def link_sweep(
+        self,
+        *,
+        limit: int = 8,
+        per_thought: int = 6,
+    ) -> list[dict[str, Any]]:
+        """A bounded, vault-wide sweep of the least-connected thoughts."""
+        from .recall.candidates import sweep_candidates
+
+        return sweep_candidates(self, limit=limit, per_thought=per_thought)
 
     def delete_all_derived_intelligence(self) -> dict[str, Any]:
         """Explicit, product-facing name for ``clear_derived_data()``.

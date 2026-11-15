@@ -21,6 +21,18 @@ arrive as an optional extra candidate generator, never as a dependency.
 from __future__ import annotations
 
 from .analysis import QueryAnalysis, analyze_query
+from .candidates import (
+    MAX_CANDIDATES,
+    SOURCE_COMMUNITY,
+    SOURCE_GRAPH,
+    SOURCE_LABELS,
+    SOURCE_LEXICAL,
+    SOURCE_LIFECYCLE,
+    SOURCE_TAG,
+    SOURCE_VAULT_CONTEXT,
+    select_candidates,
+    sweep_candidates,
+)
 from .clusters import cluster_summary, cohesion_score, connected_components, label_propagation
 from .config import (
     DEFAULT_CONFIG,
@@ -128,6 +140,16 @@ __all__ = [
     "connected_components",
     "label_propagation",
     "cohesion_score",
+    "MAX_CANDIDATES",
+    "SOURCE_LABELS",
+    "SOURCE_LEXICAL",
+    "SOURCE_GRAPH",
+    "SOURCE_COMMUNITY",
+    "SOURCE_TAG",
+    "SOURCE_LIFECYCLE",
+    "SOURCE_VAULT_CONTEXT",
+    "select_candidates",
+    "sweep_candidates",
     "FEEDBACK_WEIGHTS",
     "memory_key",
     "record_feedback",

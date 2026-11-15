@@ -26,6 +26,9 @@
     // v0.2 — Connection Explorer V2
     graph: { rootId: null, sourceId: '', targetId: '', path: null, neighbourhood: null, depth: 1, selectedId: null },
     aiConnections: { loadingFor: null, result: null },
+    // AI link review beyond a single thought: a pairwise comparison and a
+    // bounded vault sweep.  Both are explicit, both are proposals only.
+    aiLinkReview: { pair: null, pairLoading: false, sweep: null, sweepLoading: false },
     importedFile: { name: '', text: '', error: '' },
     captureDraft: null,
     vaultSourceType: 'ALL',
@@ -705,24 +708,38 @@
       RELATIONSHIP_REMOVED: 'Connection removed · history retained',
       RELATIONSHIP_EVIDENCE_NOTE_ADDED: 'User-authored evidence note added to a connection',
       AI_SUMMARY_GENERATED: 'AI summary generated · derived data',
+      AI_INTERPRETATION_GENERATED: 'AI interpretation generated · derived data',
+      AI_LINK_ANALYSIS_GENERATED: 'AI link analysis generated · derived data',
     };
     return labels[event.eventType] || String(event.eventType || 'Event').replaceAll('_', ' ').toLowerCase();
   }
 
+  const CANDIDATE_SOURCE_NAMES = {
+    LEXICAL: 'shared words',
+    GRAPH: 'a stored connection',
+    COMMUNITY: 'the same community',
+    TAG: 'a shared tag',
+    LIFECYCLE: 'the same lifecycle',
+    VAULT_CONTEXT: 'vault context',
+  };
+
   function renderAIConnectionsPanel(thoughtId, aiAvailable, compact = false) {
     const loading = state.aiConnections.loadingFor === thoughtId;
     const result = state.aiConnections.result?.thoughtId === thoughtId ? state.aiConnections.result : null;
-    const results = result?.suggestions?.length ? `<div class="ai-connection-results">${result.suggestions.map((item, index) => `<article class="ai-connection-result"><div><strong>${esc(item.type.replaceAll('_', ' '))} <span>→</span> ${esc(item.targetTitle)}</strong><small>${esc(SOURCE_NAMES[item.targetSourceType] || 'Thought')} · ${item.targetStatus === 'GRAVEYARD' ? 'Graveyard' : 'Active'} · AI suggested</small><p>${esc(item.reason)}</p></div><button class="button small ${item.saved ? '' : 'primary'}" type="button" data-action="save-ai-relationship" data-id="${attr(thoughtId)}" data-index="${index}" ${item.saved ? 'disabled' : ''}>${item.saved ? 'Proposal saved' : 'Save proposal'}</button></article>`).join('')}</div>` : '';
+    const results = result?.suggestions?.length ? `<div class="ai-connection-results">${result.suggestions.map((item, index) => `<article class="ai-connection-result"><div><strong>${esc(item.type.replaceAll('_', ' '))} <span>→</span> ${esc(item.targetTitle)}</strong><small>${esc(SOURCE_NAMES[item.targetSourceType] || 'Thought')} · ${item.targetStatus === 'GRAVEYARD' ? 'Graveyard' : 'Active'} · AI suggested${item.candidateReason ? ` · ${esc(item.candidateReason)}` : ''}</small><p>${esc(item.reason)}</p></div><button class="button small ${item.saved ? '' : 'primary'}" type="button" data-action="save-ai-relationship" data-id="${attr(thoughtId)}" data-index="${index}" ${item.saved ? 'disabled' : ''}>${item.saved ? 'Proposal saved' : 'Save proposal'}</button></article>`).join('')}</div>` : '';
+    const sourceBreakdown = result && result.sources && Object.keys(result.sources).length
+      ? `<p class="ai-connection-sources">Candidates came from ${Object.entries(result.sources).map(([key, count]) => `${esc(CANDIDATE_SOURCE_NAMES[key] || key)} (${count})`).join(', ')}.</p>`
+      : '';
     const stateMessage = loading
-      ? '<p class="ai-connection-status">Comparing this thought with local candidates…</p>'
+      ? '<p class="ai-connection-status">Reading this thought and comparing it with local candidates…</p>'
       : result?.error
         ? `<p class="ai-connection-status error">${esc(result.error)}</p>`
         : result && !result.suggestions?.length
-          ? `<p class="ai-connection-status">No likely link found among ${result.examinedCount} candidate thoughts. This is a screening result, not proof that no connection exists.</p>`
+          ? `<p class="ai-connection-status">No likely link found among ${result.examinedCount} candidate thoughts${result.notLinkedCount ? ` (${result.notLinkedCount} read and judged unrelated)` : ''}. This is a screening result, not proof that no connection exists.</p>`
           : result
             ? `<p class="ai-connection-status">${result.suggestions.length} possible link${result.suggestions.length === 1 ? '' : 's'} found among ${result.examinedCount} candidates · ${esc(result.provider)}${result.model ? ` · ${esc(result.model)}` : ''}. Nothing is saved until you choose Save proposal.</p>`
             : '';
-    return `<section class="ai-connection-panel ${compact ? 'compact' : ''}"><div class="ai-connection-heading"><div><span class="eyebrow">AI · REVIEWABLE SUGGESTIONS</span><strong>Find possible links</strong></div>${aiAvailable ? `<button class="button ${compact ? 'small' : ''}" type="button" data-action="ai-find-connections" data-id="${attr(thoughtId)}" ${loading ? 'disabled' : ''}>${loading ? 'Checking…' : result ? 'Check again' : 'Check connections'}</button>` : '<button class="button small" type="button" data-view="data">Configure provider</button>'}</div><p class="ai-connection-privacy">When requested, IWTT sends this thought and up to 12 locally selected candidates to your configured provider. The original captures remain unchanged.</p>${stateMessage}${results}</section>`;
+    return `<section class="ai-connection-panel ${compact ? 'compact' : ''}"><div class="ai-connection-heading"><div><span class="eyebrow">AI · REVIEWABLE SUGGESTIONS</span><strong>Find possible links</strong></div>${aiAvailable ? `<button class="button ${compact ? 'small' : ''}" type="button" data-action="ai-find-connections" data-id="${attr(thoughtId)}" ${loading ? 'disabled' : ''}>${loading ? 'Checking…' : result ? 'Check again' : 'Check connections'}</button>` : '<button class="button small" type="button" data-view="data">Configure provider</button>'}</div><p class="ai-connection-privacy">When requested, IWTT sends this thought and up to 16 locally selected candidates to your configured provider. Candidates are drawn from several structural sources, not only shared words, so a link that uses different vocabulary can still be found. The original captures remain unchanged.</p>${stateMessage}${sourceBreakdown}${results}</section>`;
   }
 
   async function findAIConnections(thoughtId) {
@@ -737,6 +754,57 @@
     } finally {
       state.aiConnections.loadingFor = null;
       await render();
+    }
+  }
+
+  async function compareAIThoughts(sourceId, targetId) {
+    state.aiLinkReview.pairLoading = true;
+    state.aiLinkReview.pair = null;
+    await render();
+    try {
+      const { data } = await api('/api/ai/link-check/pair', { method: 'POST', body: { sourceId, targetId } });
+      state.aiLinkReview.pair = data.verdict;
+    } catch (error) {
+      state.aiLinkReview.pair = { error: error.message, linked: false };
+    } finally {
+      state.aiLinkReview.pairLoading = false;
+      await render();
+    }
+  }
+
+  async function sweepAILinks(limit, perThought) {
+    state.aiLinkReview.sweepLoading = true;
+    state.aiLinkReview.sweep = null;
+    await render();
+    try {
+      const { data } = await api('/api/ai/link-check/sweep', { method: 'POST', body: { limit, perThought } });
+      state.aiLinkReview.sweep = data;
+    } catch (error) {
+      state.aiLinkReview.sweep = { error: error.message, results: [] };
+    } finally {
+      state.aiLinkReview.sweepLoading = false;
+      await render();
+    }
+  }
+
+  async function saveSweepRelationship(button) {
+    const index = Number(button.dataset.index);
+    const sweep = state.aiLinkReview.sweep;
+    const proposal = sweep?.results?.[index];
+    if (!proposal) return;
+    button.disabled = true;
+    try {
+      await api('/api/relationships', { method: 'POST', body: {
+        sourceId: proposal.sourceId, targetId: proposal.targetId,
+        type: proposal.type, provenance: 'AI_SUGGESTED',
+        metadata: { note: proposal.reason, aiProvider: sweep.provider, aiModel: sweep.model || null },
+      } });
+      proposal.saved = true;
+      toast('Saved as an unconfirmed AI proposal. Review it before confirming.');
+      await render();
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message, 'error');
     }
   }
 
@@ -919,6 +987,33 @@
       </section>`;
   }
 
+  function renderLinkReviewPanel(allThoughts, aiAvailable) {
+    if (!aiAvailable) {
+      return `<section class="panel link-review-panel"><div class="panel-head"><div><span class="eyebrow">AI · LINK REVIEW</span><h2 style="margin-top:7px">Compare two thoughts, or sweep the vault</h2><p>Needs an AI provider. Configure one in Data & privacy; IWTT works fully without it.</p></div><button class="button small" type="button" data-view="data">Configure provider</button></div></section>`;
+    }
+    const options = allThoughts.map(thought => `<option value="${attr(thought.id)}">${esc(titleOf(thought))}</option>`).join('');
+    const review = state.aiLinkReview;
+    const pair = review.pair;
+    const pairMarkup = pair
+      ? (pair.error
+        ? `<p class="ai-connection-status error">${esc(pair.error)}</p>`
+        : pair.linked
+          ? `<div class="recall-banner possible"><strong>Possible link · ${esc(String(pair.type || 'RELATED_TO').replaceAll('_', ' '))}</strong><p>${esc(pair.reason || '')}</p><p class="revision-note">A proposal only. Save it as a connection to keep it; it stays unconfirmed until you review it.</p></div>`
+          : `<div class="recall-banner none"><strong>No link found</strong><p>${esc(pair.reason || '')}</p><p class="revision-note">The provider read both thoughts and did not find a defensible connection. That is a screening result, not proof that none exists.</p></div>`)
+      : '';
+    const sweep = review.sweep;
+    const sweepMarkup = sweep
+      ? (sweep.error
+        ? `<p class="ai-connection-status error">${esc(sweep.error)}</p>`
+        : `<div class="recall-banner ${sweep.results?.length ? 'possible' : 'none'}"><strong>${sweep.results?.length || 0} possible link${sweep.results?.length === 1 ? '' : 's'} across ${sweep.sourceCount} thought${sweep.sourceCount === 1 ? '' : 's'}</strong><p>${esc(sweep.note || '')}</p></div>${sweep.results?.length ? `<div class="ai-connection-results">${sweep.results.map((item, index) => `<article class="ai-connection-result"><div><strong>${esc(item.sourceTitle)} <span>→</span> ${esc(item.targetTitle)}</strong><small>${esc(String(item.type || '').replaceAll('_', ' '))} · AI suggested${item.candidateSource ? ` · ${esc(CANDIDATE_SOURCE_NAMES[item.candidateSource] || item.candidateSource)}` : ''}</small><p>${esc(item.reason)}</p></div><button class="button small ${item.saved ? '' : 'primary'}" type="button" data-action="save-sweep-relationship" data-index="${index}" ${item.saved ? 'disabled' : ''}>${item.saved ? 'Proposal saved' : 'Save proposal'}</button></article>`).join('')}</div>` : ''}`)
+      : '';
+    return `<section class="panel link-review-panel"><div class="panel-head"><div><span class="eyebrow">AI · LINK REVIEW</span><h2 style="margin-top:7px">Compare two thoughts, or sweep the vault</h2><p>Both actions read thoughts and report what the provider finds. Nothing is saved until you choose Save proposal.</p></div></div>
+      <div class="link-review-columns">
+        <div class="link-review-column"><strong>Compare two thoughts</strong><p class="revision-note">The first thought is the source; the direction of any proposal respects that order.</p><form id="ai-pair-form" class="link-review-form"><label class="field">Source thought<select name="sourceId" required>${options}</select></label><label class="field">Compare with<select name="targetId" required>${options}</select></label><div class="data-actions"><button class="button primary small" type="submit" ${review.pairLoading ? 'disabled' : ''}>${review.pairLoading ? 'Comparing…' : 'Compare'}</button></div></form>${pairMarkup}</div>
+        <div class="link-review-column"><strong>Sweep the vault</strong><p class="revision-note">Checks the least-connected thoughts against a bounded candidate pool. This makes one provider request per thought, so keep the count low.</p><form id="ai-sweep-form" class="link-review-form"><label class="field">Thoughts to check<select name="limit"><option value="3">3</option><option value="6" selected>6</option><option value="10">10</option></select></label><label class="field">Candidates each<select name="perThought"><option value="4">4</option><option value="6" selected>6</option><option value="10">10</option></select></label><div class="data-actions"><button class="button primary small" type="submit" ${review.sweepLoading ? 'disabled' : ''}>${review.sweepLoading ? 'Sweeping…' : 'Sweep'}</button></div></form>${sweepMarkup}</div>
+      </div></section>`;
+  }
+
   async function renderConnections() {
     const [{ data: thoughtData }, { data: relData }, { data: graphData }] = await Promise.all([
       api('/api/thoughts?status=ALL'), api('/api/relationships?status=LIVE'), api('/api/graph/view?max_nodes=200&include_graveyard=true&include_suggested=true')
@@ -943,7 +1038,7 @@
     const { data: aiStatus } = await api('/api/ai/status');
     const hiddenCount = Math.max(0, allThoughts.length - visible.length);
     return `<section class="view-heading"><div><span class="eyebrow">CONNECTION EXPLORER V2 · CANONICAL LINKS ONLY</span><h1>Connections between thoughts.</h1><p>Solid arrows show saved directional relationships; dashed links are local shared-concept hints. Click a concept to open its source thought. Positions and inferred links are never saved.</p></div><div class="heading-actions"><button class="button" data-view="clusters">Derived clusters</button><button class="button" data-view="vault">Browse vault</button></div></section>
-      ${allThoughts.length ? `<div class="graph-workspace"><aside class="community-rail"><div class="community-rail-head"><div><strong>Communities</strong><small>DERIVED GROUPS</small></div><span>${communityChoices.length} total</span></div><button class="community-filter ${state.graphCommunity === 'ALL' ? 'selected' : ''}" data-action="graph-community" data-community="ALL"><i class="community-swatch all"></i><span>All concepts</span><small>${allVisible.length}</small></button>${communityChoices.map((community,index) => `<button class="community-filter ${state.graphCommunity === community.id ? 'selected' : ''}" data-action="graph-community" data-community="${attr(community.id)}"><i class="community-swatch" style="--community-color:${communityColor(community.id)}"></i><span>${esc(community.label)}</span><small>${community.count}</small></button>`).join('')}<p>Automatically discovered groups are derived; they do not change your saved thoughts.</p></aside><section class="panel graph-panel"><div class="graph-toolbar"><span><strong>${visible.length}</strong> concepts · <strong>${visibleEdges.length}</strong> stored links</span><small>Click any concept to inspect the original thought.</small></div><div class="graph-canvas">${renderGraph(visible, visibleEdges, selectedId)}</div><div class="graph-legend"><span><i class="legend-line"></i> Saved, directional relationship</span><span><i class="legend-line affinity"></i> Shared concepts · derived, not saved</span><span>Color regions = automatically detected communities</span></div>${hiddenCount ? `<p class="revision-note" style="padding:0 5px">Showing ${visible.length} of ${allThoughts.length} concepts (graph view cap). Use search or click a visible node to navigate.</p>` : ''}</section>${renderGraphInspector(selectedThought, selectedNode, selectedLinks, aiStatus.available)}</div>${connectionExplorerPanels(allThoughts)}
+      ${allThoughts.length ? `<div class="graph-workspace"><aside class="community-rail"><div class="community-rail-head"><div><strong>Communities</strong><small>DERIVED GROUPS</small></div><span>${communityChoices.length} total</span></div><button class="community-filter ${state.graphCommunity === 'ALL' ? 'selected' : ''}" data-action="graph-community" data-community="ALL"><i class="community-swatch all"></i><span>All concepts</span><small>${allVisible.length}</small></button>${communityChoices.map((community,index) => `<button class="community-filter ${state.graphCommunity === community.id ? 'selected' : ''}" data-action="graph-community" data-community="${attr(community.id)}"><i class="community-swatch" style="--community-color:${communityColor(community.id)}"></i><span>${esc(community.label)}</span><small>${community.count}</small></button>`).join('')}<p>Automatically discovered groups are derived; they do not change your saved thoughts.</p></aside><section class="panel graph-panel"><div class="graph-toolbar"><span><strong>${visible.length}</strong> concepts · <strong>${visibleEdges.length}</strong> stored links</span><small>Click any concept to inspect the original thought.</small></div><div class="graph-canvas">${renderGraph(visible, visibleEdges, selectedId)}</div><div class="graph-legend"><span><i class="legend-line"></i> Saved, directional relationship</span><span><i class="legend-line affinity"></i> Shared concepts · derived, not saved</span><span>Color regions = automatically detected communities</span></div>${hiddenCount ? `<p class="revision-note" style="padding:0 5px">Showing ${visible.length} of ${allThoughts.length} concepts (graph view cap). Use search or click a visible node to navigate.</p>` : ''}</section>${renderGraphInspector(selectedThought, selectedNode, selectedLinks, aiStatus.available)}</div>${renderLinkReviewPanel(allThoughts, aiStatus.available)}${connectionExplorerPanels(allThoughts)}
       <div class="section-head"><h2>Saved connections</h2><span class="section-meta">${allRelationships.length} active · ${allRelationships.filter(r => r.status === 'SUGGESTED').length} unconfirmed</span></div>
       ${allRelationships.length ? `<div class="list-stack">${allRelationships.map(r => `<article class="list-thought" style="cursor:default"><div><div class="list-meta"><span class="match-pill">${esc(r.type.replaceAll('_', ' '))}</span><span class="provenance-pill ${r.status === 'SUGGESTED' ? 'suggested' : 'confirmed'}">${r.status === 'SUGGESTED' ? 'Unconfirmed AI suggestion' : r.provenance === 'AI_SUGGESTED' ? 'Confirmed AI suggestion' : 'User-confirmed'}</span></div><h3><button class="connection-target" data-open-thought="${attr(r.sourceId)}">${esc(r.source?.title || 'Thought')}</button> <span style="color:#9aa197">↔</span> <button class="connection-target" data-open-thought="${attr(r.targetId)}">${esc(r.target?.title || 'Thought')}</button></h3><p>${esc(r.metadata?.note || 'A saved relationship between two canonical thoughts.')}</p></div><div class="list-right">${r.status === 'SUGGESTED' ? `<button class="button small" data-action="confirm-relationship" data-id="${attr(r.id)}">Confirm</button>` : `<span class="thought-date">${esc(date(r.createdAt))}</span>`}</div></article>`).join('')}</div>` : '<div class="empty-state"><div class="empty-icon">⌘</div><h3>No connections saved yet</h3><p>Open a thought to link it to another. AI suggestions, if added, stay proposals until you confirm them.</p></div>'}` : emptyState('Your graph begins with two thoughts', 'Capture a couple of ideas, then connect them from a thought’s detail view.', 'Capture a thought', 'capture')}`;
   }
@@ -1040,6 +1135,9 @@
       toast('Interpretation saved as derived information. Your original capture is unchanged.');
       return render();
     }
+    if (action === 'ai-find-connections') return findAIConnections(id);
+    if (action === 'save-ai-relationship') return saveAIConnectionSuggestion(button);
+    if (action === 'save-sweep-relationship') return saveSweepRelationship(button);
     if (action === 'capture-ai-interpretation') {
       const { data } = await api(`/api/thoughts/${encodeURIComponent(id)}`);
       const thought = data.thought;
@@ -1233,6 +1331,25 @@
         toast('AI enabled for this session. The key is not saved in the vault.');
         await render();
       } catch (error) { toast(error.message, 'error'); submit.disabled = false; }
+      return;
+    }
+    if (form.id === 'ai-pair-form') {
+      event.preventDefault();
+      const values = new FormData(form);
+      const sourceId = String(values.get('sourceId') || '');
+      const targetId = String(values.get('targetId') || '');
+      if (!sourceId || !targetId) return;
+      if (sourceId === targetId) {
+        toast('Choose two different thoughts to compare.', 'error');
+        return;
+      }
+      await compareAIThoughts(sourceId, targetId);
+      return;
+    }
+    if (form.id === 'ai-sweep-form') {
+      event.preventDefault();
+      const values = new FormData(form);
+      await sweepAILinks(Number(values.get('limit') || 6), Number(values.get('perThought') || 6));
       return;
     }
     if (form.id === 'file-import-form') {

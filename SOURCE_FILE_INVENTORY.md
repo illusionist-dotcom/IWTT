@@ -55,6 +55,7 @@ Line counts are for the v0.2 tree (8,416 lines in `iwtt/recall/` alone).
 - `filters.py` (727) — type/status/tag/time/demo filters, the SQL prefilter, and rejection reporting (an exclusion is always visible).
 - `expansion.py` (515) — seed selection, bounded neighbourhood expansion, provenance and relationship weights, hub penalty, relationship context.
 - `paths.py` (376) — bounded BFS path finding, `PathResult`, lineage, and user-authored relationship evidence notes in path context.
+- `candidates.py` (326) — structurally diverse candidate selection for an explicit AI link review: six sources (lexical, graph, community, tag, lifecycle, vault context) interleaved round-robin, each candidate carrying the reason it was offered. Derived and AI-free — it calls no provider and writes nothing.
 - `graphview.py` (289) — the bounded, derived `GraphViewModel` with `entityType`, canonical/derived field declarations, and truncation bounds.
 - `clusters.py` (397) — connected components, synchronous label propagation, cohesion, stable cluster identity with greedy majority remapping, cluster labels.
 - `querymemory.py` (385) — derived query-outcome events, decay, corroboration, clamping, stats, history, reset.
@@ -69,13 +70,15 @@ Line counts are for the v0.2 tree (8,416 lines in `iwtt/recall/` alone).
 - `web/style.css` — responsive local styling with no remote assets; keeps original text visually distinct from derived explanation.
 - `web/app.js` — capture, browsing, search, detail/history, Graveyard, graph, and data workflows, plus v0.2 recall rendering, explanation chips, breakdown panel, clustering, path finding, neighbourhoods and feedback; renders and appends user-authored connection notes.
 
-## Tests (131 tests)
+## Tests (166 tests)
 
 - `tests/test_store.py` — **15 v0.1 tests.** The canonical contract: search behaviour, immutability, revisions, lifecycle, provenance, export/import, backup integrity, derived deletion. Assertions are preserved; SQLite handles are explicitly closed for Windows portability.
 - `tests/sqlite_helpers.py` — shared context manager that commits or rolls back and always closes test SQLite connections.
 - `tests/test_recall_engine.py` — 24 tests: signals, tiers, morphology, coverage, IDF, trigrams, fuzzy, time windows and their precision, lifecycle, states, ambiguity, honest absence, explanations, the lexical-evidence gate.
 - `tests/test_graph_intelligence.py` — 22 tests: edge authority, provenance preservation, direction, hub suppression, expansion bounds, paths, lineage, neighbourhoods, `GraphViewModel`, clusters and their stable identity.
 - `tests/test_query_memory.py` — 16 tests: weights, decay, corroboration, clamping, reset, inspection, and the guarantee that learning never touches canonical data or confirms a suggestion.
+- `tests/test_ai_links.py` — 28 tests: structurally diverse candidate selection (including the case where the linked thought shares no vocabulary), the provider boundary (HTTPS/loopback validation, a bad environment endpoint degrading to NoAI), re-validation of untrusted provider output, the derived `AI_LINK_ANALYSIS` artifact, and the three HTTP surfaces including their refusal to run without a provider.
+- `tests/test_web_interface.py` — 7 tests: static guards on the browser interface. Every rendered `data-action` must have a handler, every rendered form must have a submit handler, the AI link actions and routes must be wired, the interface must not reference a remote host, and every nav view must be renderable. These exist because a dead button is invisible to every other gate: the server does not know a control was rendered, the unit tests never touch the DOM, and the release verifiers exercise HTTP rather than click handlers.
 - `tests/test_determinism.py` — 15 tests: identical payloads across repeats, rebuilds, restarts and derived deletion; insertion-order independence; published tie-breaks; stable clusters; reproducible feedback effects.
 - `tests/test_layering.py` — 29 tests: module boundaries and the dependency classifier, per-thought vs global derived-table contracts, canonical deletion cannot contaminate derived aggregates, the production deletion path (`remove_demo`), capability-manifest honesty, cross-domain documentation, camelCase public payloads, local-first and no-AI guarantees.
 - `tests/test_canonical_destruction.py` — 3 tests: the mandatory destructive verification — create canonical memory, build every derived artefact, exercise recall and the graph, delete all of it, prove canonical survival byte-for-byte, rebuild, and show recall working again.

@@ -580,6 +580,90 @@ def main() -> int:
             httpd.server_close()
             thread.join(timeout=5)
 
+        # --- 7: AI link detection -----------------------------------------------
+        # The AI surface is optional and off by default.  Two things must hold
+        # at the same time: with no provider the routes refuse to run, and with
+        # a provider they produce PROPOSALS that never become canonical truth.
+        ai_vault = Vault(root / "ai" / "thought-vault.sqlite3", ai_provider=NoAIProvider())
+        ai_vault.initialize()
+        ai_ids = {}
+        for key, text, title in (
+            ("enemy", "Enemies remember how the player fought them.", "Enemy memory"),
+            ("kitchen", "A bread proofing timer that senses ambient warmth.", "Sourdough scheduler"),
+        ):
+            ai_ids[key] = ai_vault.create_thought(text, "THOUGHT", title)["id"]
+
+        ai_httpd = iwtt_server.IWTTHTTPServer(
+            ("127.0.0.1", 0), iwtt_server.RequestHandler, ai_vault
+        )
+        ai_port = ai_httpd.server_address[1]
+        ai_thread = threading.Thread(target=ai_httpd.serve_forever, daemon=True)
+        ai_thread.start()
+        try:
+            no_provider_status, _ = _http(
+                ai_port, "/api/thoughts/%s/ai/relationships" % ai_ids["enemy"], "POST", {}
+            )
+            require(no_provider_status == 503, "aiRoutesRefuseWithoutProvider",
+                    f"status was {no_provider_status}")
+
+            class _VerifierProvider(NoAIProvider):
+                name = "VerifierProvider"
+                available = True
+                source = "runtime"
+
+                def assess_links(self, thought, candidates):
+                    return [
+                        {"targetId": candidates[0]["id"], "linked": True, "type": "RELATED_TO",
+                         "reason": "both track a hidden state across sessions"}
+                    ] if candidates else []
+
+                def compare_thoughts(self, first, second):
+                    return {"linked": True, "type": "INSPIRED_BY",
+                            "reason": "the second idea informed the first"}
+
+            ai_vault.ai_provider = _VerifierProvider()
+            link_status, link_payload = _http(
+                ai_port, "/api/thoughts/%s/ai/relationships" % ai_ids["enemy"], "POST", {}
+            )
+            pair_status, pair_payload = _http(
+                ai_port, "/api/ai/link-check/pair", "POST",
+                {"sourceId": ai_ids["enemy"], "targetId": ai_ids["kitchen"]},
+            )
+            sweep_status, sweep_payload = _http(
+                ai_port, "/api/ai/link-check/sweep", "POST", {"limit": 2, "perThought": 2},
+            )
+            relationships_after = ai_vault.list_relationships("LIVE")
+            artifacts = ai_vault.get_thought(ai_ids["enemy"])["derivedArtifacts"]
+            record("aiLinkSurface", {
+                "noProviderStatus": no_provider_status,
+                "linkCheckStatus": link_status,
+                "linkCheckExamined": (link_payload or {}).get("examinedCount"),
+                "linkCheckSuggestions": len((link_payload or {}).get("suggestions") or []),
+                "pairStatus": pair_status,
+                "pairLinked": ((pair_payload or {}).get("verdict") or {}).get("linked"),
+                "pairProvenance": ((pair_payload or {}).get("verdict") or {}).get("provenance"),
+                "sweepStatus": sweep_status,
+                "sweepExamined": (sweep_payload or {}).get("examinedCount"),
+                "relationshipsCreated": len(relationships_after),
+                "artifactTypes": [item["artifactType"] for item in artifacts],
+            })
+            require(link_status == 200 and (link_payload or {}).get("examinedCount", 0) > 0,
+                    "aiLinkCheckRunsWithAProvider")
+            require(pair_status == 200 and (pair_payload or {}).get("verdict", {}).get("linked") is True,
+                    "aiPairwiseComparisonRuns")
+            require(sweep_status == 200, "aiSweepRuns")
+            require(len(relationships_after) == 0,
+                    "aiAnalysisNeverCreatesARelationship",
+                    f"{len(relationships_after)} relationship(s) were created by an AI action")
+            require("AI_LINK_ANALYSIS" in [item["artifactType"] for item in artifacts],
+                    "aiAnalysisIsStoredAsADerivedArtifact")
+            require(((pair_payload or {}).get("verdict") or {}).get("provenance") == "AI_SUGGESTED",
+                    "aiVerdictIsMarkedAsSuggested")
+        finally:
+            ai_httpd.shutdown()
+            ai_httpd.server_close()
+            ai_thread.join(timeout=5)
+
         # --- final canonical assertion ----------------------------------------
         record("canonicalFingerprintUnchangedAtEnd",
                vault.canonical_fingerprint() == canonical_before)

@@ -242,6 +242,40 @@ kbd { font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; color: #a5b7aa;
 .derived-mark:before { content: "✦"; font-size: 11px; }
 .derived-summary { color: #655d4e; font: 12px/1.55 Georgia, serif; margin: 10px 0; white-space: pre-wrap; }
 .derived-meta { color: #a18f6e; font-size: 8px; }
+
+/* ---- AI link review ---------------------------------------------------- */
+/* The AI panel is deliberately quieter than the canonical panels around it:
+   a proposal must never look like something the user wrote or confirmed. */
+.ai-connection-panel { border: 1px solid #e7dcbf; background: #fcf9ef; border-radius: 12px; padding: 13px 14px; display: grid; gap: 8px; }
+.ai-connection-panel.compact { padding: 10px 11px; gap: 6px; }
+.ai-connection-heading { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.ai-connection-heading strong { display: block; color: #5d5340; font: 400 15px/1.25 Georgia, serif; margin-top: 2px; }
+.ai-connection-panel.compact .ai-connection-heading strong { font-size: 13px; }
+.ai-connection-heading .eyebrow { color: #a08a55; font-size: 8px; font-weight: 750; letter-spacing: .12em; }
+.ai-connection-privacy { color: #9b8f74; font-size: 8px; line-height: 1.5; margin: 0; }
+.ai-connection-status { color: #6f6552; font-size: 9.5px; line-height: 1.55; margin: 0; }
+.ai-connection-status.error { color: #9a4f45; }
+.ai-connection-sources { color: #a2957a; font-size: 8px; margin: 0; }
+.ai-connection-results { display: grid; gap: 7px; margin-top: 2px; }
+.ai-connection-result { border: 1px solid #eae0c6; background: #fffcf3; border-radius: 9px; padding: 10px; display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.ai-connection-result strong { color: #574d3b; font-size: 10.5px; }
+.ai-connection-result strong span { color: #b0a084; }
+.ai-connection-result small { display: block; color: #a89b80; font-size: 8px; margin-top: 3px; }
+.ai-connection-result p { color: #756a56; font-size: 9.5px; line-height: 1.5; margin: 5px 0 0; }
+.link-review-panel { margin-top: 16px; border: 1px solid #e7dcbf; background: #fcf9ef; }
+.link-review-panel .panel-head h2 { color: #665537; }
+.link-review-panel .panel-head p { color: #9b8f74; font-size: 9px; }
+.link-review-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.link-review-column { border: 1px solid #eae0c6; background: #fffcf3; border-radius: 11px; padding: 13px 14px; min-width: 0; }
+.link-review-column > strong { color: #574d3b; font: 400 15px/1.25 Georgia, serif; }
+.link-review-column .revision-note { color: #a2957a; font-size: 8px; line-height: 1.5; display: block; margin: 5px 0 10px; }
+.link-review-form { display: grid; gap: 9px; }
+.link-review-form .field { gap: 4px; }
+.link-review-form .field label { color: #9b8f74; }
+.link-review-form .field select { border: 1px solid #e6dcc2; background: #fffefa; color: #4f4738; border-radius: 8px; padding: 9px 10px; font-size: 11px; outline: 0; }
+.link-review-form .field select:focus { border-color: #c9b482; }
+.link-review-column .ai-connection-results { margin-top: 11px; }
+.link-review-column .recall-banner { margin-bottom: 10px; }
 .derived-empty { color: #95896f; font-size: 9px; line-height: 1.55; margin: 0 0 11px; }
 .timeline-toolbar { display: flex; gap: 8px; align-items: center; color: #8d938b; font-size: 9px; }
 .timeline-list { display: grid; gap: 0; border-left: 1px solid #dfe5dc; margin: 3px 0 0 9px; padding: 0 0 0 22px; }

@@ -53,6 +53,33 @@ Following the useful source-evidence pattern found in the current Graphify audit
 
 GraphViewModel and recall ranking do not use these notes as new semantic evidence. This keeps graph exploration explainable while avoiding an unreviewed change to search semantics.
 
+### AI link proposals
+
+The Connections view can ask a configured AI provider to read a thought and
+judge whether it is linked to any of a bounded candidate pool. The pool is
+drawn from six structural sources — shared words, stored connections, the same
+automatically discovered community, a shared tag, the same lifecycle, and a
+vault-wide residual sample — because a pool chosen by shared words alone can
+only ever rediscover what deterministic recall already found. Each candidate
+carries the reason it was offered, and the UI publishes the breakdown.
+
+Three surfaces exist: a per-thought link check, an explicit two-thought
+comparison, and a bounded vault sweep of the least-connected thoughts.
+
+**A proposal is not an edge.** An analysis writes no relationship at all: it
+stores an `AI_LINK_ANALYSIS` derived artifact and records an
+`AI_LINK_ANALYSIS_GENERATED` event that records only that the action
+happened. A relationship appears only when the user saves the proposal, and
+then it is created with `provenance=AI_SUGGESTED` and `status=SUGGESTED` —
+the same contract as every other suggestion — and stays that way until a
+human confirms it. `scripts/verify_release_v02.py` asserts that a link check,
+a pairwise comparison and a vault sweep between them create zero
+relationships, and that the analysis is stored as a derived artifact.
+
+See [AI_BOUNDARIES.md](AI_BOUNDARIES.md) for the full contract, including the
+provider-output re-validation rules and the "screening result, not proof"
+wording.
+
 ### Community graph hints
 
 The clickable Connections graph uses the bounded `GraphViewModel` and its deterministic relationship communities. It derives a small, transient keyword list from each node's current text, then draws a limited set of dashed shared-concept links to help reveal nearby ideas. Those links, keyword hints, colors, and positions are browser/view data: they are not inserted into `relationships`, do not affect recall ranking, and are not exported as canonical truth. Saved relationships remain directional arrows and retain their stored provenance.

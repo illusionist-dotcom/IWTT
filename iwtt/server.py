@@ -18,7 +18,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .ai import AIUnavailable, NoAIProvider, OpenAICompatibleProvider, provider_from_environment
+from .ai import (
+    AIConfigurationError,
+    AIUnavailable,
+    NoAIProvider,
+    OpenAICompatibleProvider,
+    provider_from_environment,
+    validate_endpoint,
+)
 from .store import APP_VERSION, ConflictError, RELATIONSHIP_TYPES, ValidationError, Vault
 
 # PyInstaller one-file builds extract bundled files under ``_MEIPASS``.
@@ -176,7 +183,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "available": bool(getattr(provider, "available", False)),
                 "provider": getattr(provider, "name", "NoAIProvider"),
                 "model": getattr(provider, "model", None),
-                "source": getattr(provider, "source", "environment" if getattr(provider, "available", False) else "disabled"),
+                "source": getattr(provider, "source", "disabled"),
                 "boundary": "AI is optional. Text is sent only to the explicitly configured endpoint when an AI action is invoked. Runtime credentials are held in memory and never exported.",
             })
             return
@@ -369,17 +376,15 @@ class RequestHandler(BaseHTTPRequestHandler):
             if not all(isinstance(value, str) for value in (base_url, model, api_key)):
                 raise ValidationError("Endpoint, model and API key must be text")
             base_url, model, api_key = base_url.strip(), model.strip(), api_key.strip()
-            parsed = urlparse(base_url)
-            host = (parsed.hostname or "").lower()
-            loopback = host in {"localhost", "127.0.0.1", "::1"}
-            if parsed.scheme != "https" and not (parsed.scheme == "http" and loopback):
-                raise ValidationError("Use HTTPS for hosted providers; HTTP is allowed only for a loopback endpoint")
-            if parsed.username or parsed.password or parsed.query or parsed.fragment or not parsed.hostname:
-                raise ValidationError("Endpoint URL must not contain credentials, query parameters or fragments")
-            if len(base_url) > 500 or not model or len(model) > 120 or len(api_key) > 1000:
+            try:
+                base_url = validate_endpoint(base_url)
+            except AIConfigurationError as exc:
+                raise ValidationError(str(exc)) from exc
+            if not model or len(model) > 120 or len(api_key) > 1000:
                 raise ValidationError("Endpoint, model or API key is too long")
-            self.vault.ai_provider = OpenAICompatibleProvider(base_url, model, api_key or None)
-            self.vault.ai_provider.source = "runtime"
+            self.vault.ai_provider = OpenAICompatibleProvider(
+                base_url, model, api_key or None, source="runtime"
+            )
             self._send_json(200, {"available": True, "provider": self.vault.ai_provider.name, "model": model, "source": "runtime"})
             return
         if path == "/api/thoughts":
@@ -496,59 +501,83 @@ class RequestHandler(BaseHTTPRequestHandler):
                 if not getattr(provider, "available", False):
                     raise AIUnavailable("Configure an AI provider in Data & privacy before checking for connections.")
                 thought = self.vault.get_thought(thought_id)
-                query = str(thought.get("currentText") or thought.get("originalText") or "")[:1200]
-                ranked = self.vault.search(query, include_graveyard=True, limit=60)
-                existing_pairs: set[str] = set()
-                for relation in thought.get("relationships", []):
-                    if relation.get("status") in {"CONFIRMED", "SUGGESTED"}:
-                        other_id = relation.get("targetId") if relation.get("sourceId") == thought_id else relation.get("sourceId")
-                        if other_id:
-                            existing_pairs.add(other_id)
-                candidates: list[dict] = []
-                candidate_ids: set[str] = set()
-                for candidate in ranked:
-                    candidate_id = candidate.get("id")
-                    if not candidate_id or candidate_id == thought_id or candidate_id in existing_pairs or candidate_id in candidate_ids:
-                        continue
-                    candidate_ids.add(candidate_id)
-                    candidates.append(candidate)
-                    if len(candidates) == 12:
-                        break
-                if len(candidates) < 12:
-                    for candidate in self.vault.list_thoughts("ALL"):
-                        candidate_id = candidate.get("id")
-                        if not candidate_id or candidate_id == thought_id or candidate_id in existing_pairs or candidate_id in candidate_ids:
-                            continue
-                        candidate_ids.add(candidate_id)
-                        candidate["candidateReason"] = "Recent vault context"
-                        candidates.append(candidate)
-                        if len(candidates) == 12:
-                            break
+                limit = int(payload.get("limit") or 16) if isinstance(payload, dict) else 16
+                candidates = self.vault.link_candidates(thought_id, limit=limit)
                 if not candidates:
                     self._send_json(200, {
-                        "suggestions": [], "examinedCount": 0,
-                        "provider": provider.name, "model": getattr(provider, "model", None),
+                        "suggestions": [], "examinedCount": 0, "notLinkedCount": 0,
+                        "sources": {}, "provider": provider.name,
+                        "model": getattr(provider, "model", None),
+                        "note": (
+                            "There are no other thoughts to compare this one with yet. "
+                            "Capture more thoughts and the check becomes meaningful."
+                        ),
                     })
                     return
-                suggestions = provider.suggest_relationships(thought, candidates)
+                verdicts = provider.assess_links(thought, candidates)
                 candidate_by_id = {item["id"]: item for item in candidates}
                 results = []
-                for suggestion in suggestions:
-                    target_id = suggestion.get("targetId")
+                not_linked = 0
+                for verdict in verdicts:
+                    target_id = verdict.get("targetId")
                     candidate = candidate_by_id.get(target_id)
-                    if not candidate or suggestion.get("type") not in RELATIONSHIP_TYPES:
+                    if not candidate:
+                        continue
+                    if not verdict.get("linked"):
+                        not_linked += 1
+                        continue
+                    if verdict.get("type") not in RELATIONSHIP_TYPES:
                         continue
                     results.append({
                         "targetId": target_id,
                         "targetTitle": candidate.get("displayTitle") or candidate.get("title") or "Untitled thought",
                         "targetSourceType": candidate.get("sourceType", "THOUGHT"),
                         "targetStatus": candidate.get("status", "ACTIVE"),
-                        "type": suggestion["type"],
-                        "reason": suggestion["reason"],
+                        "candidateSource": candidate.get("candidateSource"),
+                        "candidateReason": candidate.get("candidateReason"),
+                        "type": verdict["type"],
+                        "reason": verdict.get("reason") or "",
                     })
+                sources: dict[str, int] = {}
+                for candidate in candidates:
+                    key = candidate.get("candidateSource") or "UNKNOWN"
+                    sources[key] = sources.get(key, 0) + 1
+                artifact = self.vault.save_derived_artifact(
+                    thought_id, "AI_LINK_ANALYSIS", {
+                        "examinedCount": len(candidates),
+                        "linkedCount": len(results),
+                        "notLinkedCount": not_linked,
+                        "candidateSources": sources,
+                        "suggestions": [
+                            {
+                                "targetId": item["targetId"],
+                                "targetTitle": item["targetTitle"],
+                                "type": item["type"],
+                                "reason": item["reason"],
+                                "candidateSource": item["candidateSource"],
+                            } for item in results
+                        ],
+                        "boundary": (
+                            "A screening result from a language model, not proof. Every "
+                            "proposal is AI_SUGGESTED and stays unconfirmed until you save "
+                            "it and review it."
+                        ),
+                    },
+                    provider.name, getattr(provider, "model", None),
+                    [thought_id] + [item["id"] for item in candidates],
+                )
                 self._send_json(200, {
-                    "suggestions": results, "examinedCount": len(candidates),
-                    "provider": provider.name, "model": getattr(provider, "model", None),
+                    "suggestions": results,
+                    "examinedCount": len(candidates),
+                    "notLinkedCount": not_linked,
+                    "sources": sources,
+                    "artifact": artifact,
+                    "provider": provider.name,
+                    "model": getattr(provider, "model", None),
+                    "note": (
+                        "This is a screening result, not proof that no other connection "
+                        "exists. Nothing is saved until you choose Save proposal."
+                    ),
                 })
                 return
         relationship_match = re.fullmatch(r"/api/relationships/([^/]+)/confirm", path)
@@ -626,6 +655,105 @@ class RequestHandler(BaseHTTPRequestHandler):
                 full=bool(body.get("full", True)),
                 rebuild_clusters=bool(body.get("rebuildClusters", True)),
             ))
+            return True
+        if path == "/api/ai/link-check/pair":
+            if not isinstance(payload, dict):
+                raise ValidationError("Request body must be an object")
+            provider = vault.ai_provider
+            if not getattr(provider, "available", False):
+                raise AIUnavailable("Configure an AI provider in Data & privacy before comparing two thoughts.")
+            source_id = str(payload.get("sourceId") or "")
+            target_id = str(payload.get("targetId") or "")
+            if not source_id or not target_id:
+                raise ValidationError("sourceId and targetId are required")
+            if source_id == target_id:
+                raise ValidationError("A thought cannot be compared with itself")
+            source = vault.get_thought(source_id)
+            target = vault.get_thought(target_id)
+            verdict = provider.compare_thoughts(source, target)
+            linked = bool(verdict.get("linked"))
+            relationship_type = verdict.get("type") if linked else ""
+            if relationship_type not in RELATIONSHIP_TYPES:
+                relationship_type = "RELATED_TO" if linked else ""
+            result = {
+                "sourceId": source_id,
+                "sourceTitle": source.get("displayTitle") or source.get("title") or "Untitled thought",
+                "targetId": target_id,
+                "targetTitle": target.get("displayTitle") or target.get("title") or "Untitled thought",
+                "linked": linked,
+                "type": relationship_type,
+                "reason": verdict.get("reason") or "",
+            }
+            if linked:
+                result["provenance"] = "AI_SUGGESTED"
+                result["status"] = "SUGGESTED"
+                result["note"] = (
+                    "A proposal only. Save it as a connection to keep it; it stays "
+                    "unconfirmed until you review it."
+                )
+            else:
+                result["note"] = (
+                    "The provider read both thoughts and did not find a defensible "
+                    "connection. That is a screening result, not proof that none exists."
+                )
+            self._send_json(200, {
+                "verdict": result,
+                "provider": provider.name,
+                "model": getattr(provider, "model", None),
+            })
+            return True
+        if path == "/api/ai/link-check/sweep":
+            if not isinstance(payload, dict):
+                raise ValidationError("Request body must be an object")
+            provider = vault.ai_provider
+            if not getattr(provider, "available", False):
+                raise AIUnavailable("Configure an AI provider in Data & privacy before sweeping the vault.")
+            limit = int(payload.get("limit") or 6)
+            per_thought = int(payload.get("perThought") or 6)
+            limit = max(1, min(limit, 12))
+            per_thought = max(1, min(per_thought, 16))
+            sweep = vault.link_sweep(limit=limit, per_thought=per_thought)
+            if not sweep:
+                self._send_json(200, {
+                    "results": [], "examinedCount": 0, "sourceCount": 0,
+                    "provider": provider.name, "model": getattr(provider, "model", None),
+                    "note": "There is nothing to sweep yet. Capture more thoughts first.",
+                })
+                return True
+            examined = 0
+            results = []
+            for entry in sweep:
+                source = vault.get_thought(entry["sourceId"])
+                verdicts = provider.assess_links(source, entry["candidates"])
+                candidate_by_id = {item["id"]: item for item in entry["candidates"]}
+                examined += len(entry["candidates"])
+                for verdict in verdicts:
+                    candidate = candidate_by_id.get(verdict.get("targetId"))
+                    if not candidate or not verdict.get("linked"):
+                        continue
+                    if verdict.get("type") not in RELATIONSHIP_TYPES:
+                        continue
+                    results.append({
+                        "sourceId": entry["sourceId"],
+                        "sourceTitle": entry["sourceTitle"],
+                        "targetId": candidate["id"],
+                        "targetTitle": candidate.get("displayTitle") or candidate.get("title") or "Untitled thought",
+                        "candidateSource": candidate.get("candidateSource"),
+                        "type": verdict["type"],
+                        "reason": verdict.get("reason") or "",
+                    })
+            self._send_json(200, {
+                "results": results,
+                "examinedCount": examined,
+                "sourceCount": len(sweep),
+                "provider": provider.name,
+                "model": getattr(provider, "model", None),
+                "note": (
+                    f"This sweep made {len(sweep)} provider request(s) and examined "
+                    f"{examined} candidate pairs. Every proposal is AI_SUGGESTED and "
+                    "unconfirmed until you save and review it."
+                ),
+            })
             return True
         return False
 

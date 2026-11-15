@@ -8,7 +8,7 @@ tests decode UTF-8 explicitly rather than relying on the host ANSI code page. Wi
 11 performance measurements are recorded separately in `BENCHMARKS.md`.
 
 ```bash
-python -m unittest discover -s tests -v        # gate 1 — 131 tests
+python -m unittest discover -s tests -v        # gate 1 — 166 tests
 python scripts/verify_release.py               # gate 2 — the v0.1 contract
 python scripts/verify_release_v02.py           # gate 3 — the v0.2 contract
 python scripts/benchmark_recall.py --suite     # gate 4 — measured performance
@@ -105,7 +105,7 @@ deletion with canonical preservation, restart persistence, and backup integrity.
 python scripts/verify_release_v02.py
 ```
 
-21 checks in one isolated temporary vault, printing `PASS` or `FAIL` with the evidence
+22 checks in one isolated temporary vault, printing `PASS` or `FAIL` with the evidence
 and exiting non-zero on failure:
 
 | Check | Asserts |
@@ -125,6 +125,42 @@ and exiting non-zero on failure:
 | `offlineNoAI` | `NoAIProvider` by default, all four config flags false, **zero third-party imports**, honesty statements present |
 | `externalFoundation` | Not implemented, not canonical, not persisted, no storage created, closed vocabularies, every deferred edge names a blocker, no canonical schema change |
 | `httpSurface` | Sixteen GET routes and three write routes answer, every payload is camelCase, and diagnostics for an unknown id states an explicit "no such thought" rather than pretending |
+| `aiLinkSurface` | With no provider every AI route answers **503**. With a provider, a link check, a pairwise comparison and a vault sweep all run — and between them they create **zero** relationships, the analysis is stored as an `AI_LINK_ANALYSIS` derived artifact, and a verdict is marked `AI_SUGGESTED` |
+
+### AI link detection tests
+
+`test_ai_links.py` covers the whole explicit-AI path with a local fake provider, so
+no test ever contacts a network:
+
+- **Candidate selection.** The pool is structurally diverse, not lexical-only. The
+  key case is asserted directly: a thought that shares *no vocabulary, no tag, no
+  cluster and no stored edge* with the source is still offered as a candidate,
+  because that is the connection a lexical pool can never surface. The pool is
+  bounded at 16, already-connected thoughts are excluded, and every candidate
+  explains why it was offered.
+- **The provider boundary.** `NoAIProvider` stays the default; hosted endpoints
+  require HTTPS; loopback HTTP is allowed; credentials, query strings and
+  fragments are refused; and an unusable endpoint in the environment degrades to
+  "no AI" instead of raising at startup.
+- **Provider output is untrusted.** A verdict naming an id that was not offered is
+  dropped, an unknown relationship type falls back to `RELATED_TO`, a positive
+  verdict with no reason is dropped, a negative verdict keeps its explanation, and
+  a duplicate target is kept once.
+- **The analysis is derived.** It is stored as an `AI_LINK_ANALYSIS` artifact, it
+  writes a canonical event that records only that the action happened, it is
+  erased with the rest of the derived data, and it creates no relationship.
+- **The HTTP surfaces.** Link check, pairwise and sweep all answer; the pairwise
+  route refuses a self-comparison; a saved proposal stays `SUGGESTED` until a
+  human confirms it; and all three routes answer **503** without a provider.
+
+`test_web_interface.py` adds static guards on the browser interface, because a
+dead button is invisible to every other gate: the server does not know a control
+was rendered, the unit tests never touch the DOM, and the release verifiers
+exercise HTTP routes rather than click handlers. These tests assert that every
+rendered `data-action` has a handler, every rendered form has a submit handler,
+the AI link actions and routes are wired, the interface references no remote
+host, and every nav view is renderable. Two such dead buttons shipped in this
+project before these guards existed.
 
 ---
 

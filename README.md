@@ -47,6 +47,7 @@ Run `dist\\IWTT-Thought-Communities.exe`; it opens the app on a free loopback po
 - **Community graph** — a clickable, bounded midnight graph with derived community filters and a selected-concept inspector for original text, source, lifecycle, tags, and relationship provenance. Dashed shared-concept links are transient visual hints, never saved relationships.
 - **Capture source labels** — `THOUGHT`, `IDEA`, `MESSAGE`, `PROMPT`, `IMPORTED`, and `AI_INTERPRETATION` distinguish what a record came from while its lifecycle remains independently `THOUGHT`, `EXPERIMENT`, `INVENTION`, or `PROJECT`. Source selection is recorded in canonical event history, preserving older SQLite schemas.
 - **In-app AI interpretation** — configure an OpenAI-compatible endpoint from Data & privacy, then explicitly request an interpretation. Generated concepts, questions, and next steps stay derived until you review and save an editable draft.
+- **AI link detection** — ask IWTT to read a thought and tell you whether it is connected to anything. Candidates come from six structural sources (shared words, stored connections, the same community, a shared tag, the same lifecycle, and a vault-wide sample) rather than shared words alone, so a link that uses different vocabulary can still be found. Also available as an explicit two-thought comparison and a bounded vault sweep. Every verdict is a proposal: it lands as `AI_SUGGESTED`/`SUGGESTED`, is never canonical, and says so.
 - **Local file reading** — import plain text, Markdown, CSV, JSON, HTML, notes, and source code into an explicitly marked thought. The selected text becomes the immutable original capture; PDF and Word extraction are not included.
 - **Time and lifecycle recall** — `today`, `last week`, `past 3 months`, `recently`, `between X and Y`, `in 2024`, Graveyard inclusion — with inferred windows explicitly labelled `ESTIMATED_RANGE` rather than presented as precision IWTT does not have.
 - **External-knowledge foundation** — entity kinds, a closed ten-type vocabulary, a separate provenance vocabulary, guards that raise, and a documented cross-domain chain (`Thought → Experiment → Project → Source File → Function → Bug → Fix → New Thought`) whose deferred edges each name their blocker. Interfaces and documentation only: nothing is ingested.
@@ -73,6 +74,7 @@ Run `dist\\IWTT-Thought-Communities.exe`; it opens the app on a free loopback po
 - **Connections:** browse saved relationships. Suggested links are visually marked and are not treated as confirmed until you press **Confirm**. Add append-only, user-authored evidence notes to explain why a connection matters; notes appear in connection history and path results.
 - **Import a file:** choose a supported local text or source file, review a preview, and preserve its extracted text as an imported thought. File content is not silently rewritten or sent to AI. The optional AI summary remains an explicit, separate action.
 - **AI interpretation:** optionally configure a hosted OpenAI-compatible provider in Data & privacy. This uses IWTT's existing local app process; it does not require a second local server. Only the selected thought text is sent when you explicitly request interpretation. A provider account/key and network connection are required for hosted AI.
+- **AI link detection:** press **Check connections** on a thought to have the provider read it against up to 16 candidates and report which are linked, and which were read and judged unrelated. The Connections view adds a **compare two thoughts** box and a bounded **vault sweep**. Nothing is saved until you press **Save proposal**, and a saved proposal stays unconfirmed until you confirm it.
 - **Timeline:** explore dated lifecycle, edit, tag, and relationship events.
 - **Data & privacy:** export/import, backup, demo data, rebuild/delete derived data, and inspect local storage path.
 
@@ -85,7 +87,7 @@ Canonical truth lives in SQLite tables for thoughts, revisions, tags, tag assign
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v        # 131 tests
+python -m unittest discover -s tests -v        # 166 tests
 python scripts/verify_release.py               # the v0.1 contract, end to end
 python scripts/verify_release_v02.py           # the v0.2 contract, end to end
 python scripts/benchmark_recall.py --suite     # 1,000 and 10,000 thoughts, measured
@@ -109,7 +111,7 @@ same ranking.
 - `iwtt/server.py` — standard-library HTTP API and static web server (v0.1 routes unchanged, v0.2 routes added).
 - `iwtt/ai.py` — no-AI fallback and opt-in OpenAI-compatible provider interface. **Not used by recall.**
 - `web/` — self-contained browser interface; no external CSS, JS, fonts, or image dependencies.
-- `tests/` — 131 automated tests: store, recall engine, graph intelligence, query memory, determinism, layering boundaries, canonical destruction, and v0.1→v0.2 migration.
+- `tests/` — 166 automated tests: store, recall engine, graph intelligence, query memory, determinism, layering boundaries, canonical destruction, v0.1→v0.2 migration, and the AI link-detection surface.
 - `scripts/` — `verify_release.py`, `verify_release_v02.py`, `benchmark_recall.py`, `build_sample_vault.py`.
 - `research/graphify-acquisition-audit/` — the research dossier v0.2 was designed from. Retained unchanged; see [GRAPHIFY_ADAPTATION_NOTES.md](GRAPHIFY_ADAPTATION_NOTES.md).
 
@@ -140,6 +142,7 @@ Documentation lives at the **repository root**, not in a `docs/` directory:
 - **No AI and no network in the recall path.** `ai_required`, `network_required`, `embeddings_enabled` and `semantic_stage_enabled` are all `False`, and the No-AI default is unchanged.
 - **Scores are deterministic weighted sums, not probabilities.** A 13.75 out of a possible 21.25 is not "65% confident".
 - **Relationship edges enrich candidates; they never replace lexical evidence.** A thought with no word in common with your query cannot become a strong match by association.
+- **AI link detection is a screening result, not proof.** A model reading two thoughts can miss a real connection and can propose one that does not exist. IWTT shows you its reasoning, records how many candidates it read and where they came from, and refuses to let a verdict become canonical on its own. The candidate pool is capped at 16, so a link to a thought outside that pool will not be found.
 - **No external-entity ingestion.** Local text/source files can be captured as clearly tagged imported thoughts. This build does not create repository/file/function entities, parse ASTs, or extract PDF/Word content.
 - **Clustering is automatic and derived**, labelled `AUTOMATICALLY_DISCOVERED_CLUSTER`, and never canonical truth.
 
