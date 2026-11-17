@@ -55,6 +55,8 @@ Thought creation events also record the user's `captureKind` (`THOUGHT`, `IDEA`,
 - `search_documents`: one disposable text projection per thought, containing original/current text, title, and tags. It is not canonical and has no authority to rewrite its source.
 - `derived_artifacts`: optional AI output. Each record has UUID, thought ID, artifact type, payload JSON, source thought IDs, provider, model, and generation timestamp. It is excluded from default canonical export and can be deleted independently.
 
+The artifact types are `AI_SUMMARY`, `AI_INTERPRETATION` and `AI_LINK_ANALYSIS`. Each one records the *action*, never the meaning of a thought: an `AI_LINK_ANALYSIS` payload holds the candidate count, where the candidates came from, and the provider's proposed links with their reasons. It holds no canonical text and creates no relationship — a link becomes canonical only when the user saves it, and then only as an unconfirmed `AI_SUGGESTED` proposal. The canonical event that accompanies an artifact (`AI_SUMMARY_GENERATED`, `AI_INTERPRETATION_GENERATED`, `AI_LINK_ANALYSIS_GENERATED`) records that the action happened; deleting the artifact does not erase the event.
+
 ### v0.2 derived tables (`recall_*`, index schema version 3)
 
 All nine are derived, rebuildable from canonical records, erased by

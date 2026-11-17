@@ -8,7 +8,7 @@ tests decode UTF-8 explicitly rather than relying on the host ANSI code page. Wi
 11 performance measurements are recorded separately in `BENCHMARKS.md`.
 
 ```bash
-python -m unittest discover -s tests -v        # gate 1 — 166 tests
+python -m unittest discover -s tests -v        # gate 1 — 173 tests
 python scripts/verify_release.py               # gate 2 — the v0.1 contract
 python scripts/verify_release_v02.py           # gate 3 — the v0.2 contract
 python scripts/benchmark_recall.py --suite     # gate 4 — measured performance
@@ -161,6 +161,14 @@ rendered `data-action` has a handler, every rendered form has a submit handler,
 the AI link actions and routes are wired, the interface references no remote
 host, and every nav view is renderable. Two such dead buttons shipped in this
 project before these guards existed.
+
+The same module then **executes** the derived-artifact renderer under Node
+against real payloads for every artifact type, and asserts that the detail view
+produces readable HTML. This caught a second defect: an `AI_LINK_ANALYSIS`
+artifact was falling through to `JSON.stringify(payload)` and reaching the
+screen as a raw JSON blob. The renderer now handles each type by name, and an
+unrecognised future type is rendered as a readable key/value list rather than
+machine output. The Node checks skip cleanly when Node is not installed.
 
 ---
 

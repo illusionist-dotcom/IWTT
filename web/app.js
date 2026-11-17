@@ -723,6 +723,51 @@
     VAULT_CONTEXT: 'vault context',
   };
 
+  function renderDerivedArtifact(artifact, thought) {
+    const type = artifact.artifactType || '';
+    const payload = artifact.payload || {};
+    const head = '<div class="revision-card"><span class="derived-mark">AI-generated &middot; ' + esc(type.replaceAll('_', ' ')) + '</span>';
+    const meta = '<div class="derived-meta">' + esc(artifact.provider) + (artifact.model ? ' &middot; ' + esc(artifact.model) : '') + ' &middot; ' + esc(date(artifact.generatedAt, true)) + ' &middot; Sources: ' + (artifact.sourceThoughtIds || []).length + ' thought</div></div>';
+
+    if (type === 'AI_LINK_ANALYSIS') {
+      const suggestions = payload.suggestions || [];
+      const sources = payload.candidateSources || {};
+      const sourceBreakdown = Object.keys(sources).length
+        ? '<p class="revision-note">Candidates came from ' + Object.entries(sources).map(([key, count]) => esc((CANDIDATE_SOURCE_NAMES[key] || key) + ' (' + count + ')')).join(', ') + '.</p>'
+        : '';
+      const rows = suggestions.length
+        ? '<div class="ai-connection-results">' + suggestions.map(item => '<article class="ai-connection-result"><div><strong>' + esc(String(item.type || '').replaceAll('_', ' ')) + ' <span>&rarr;</span> ' + esc(item.targetTitle || 'Thought') + '</strong><small>AI suggested</small><p>' + esc(item.reason || '') + '</p></div></article>').join('') + '</div>'
+        : '<p class="revision-note">No link was proposed among ' + (payload.examinedCount || 0) + ' candidates read.</p>';
+      return head + '<p class="derived-summary">' + (payload.linkedCount || 0) + ' possible link' + (payload.linkedCount === 1 ? '' : 's') + ' among ' + (payload.examinedCount || 0) + ' candidates read</p>' + sourceBreakdown + rows + '<p class="revision-note">' + esc(payload.boundary || 'A screening result, not proof.') + '</p>' + meta;
+    }
+
+    if (type === 'AI_INTERPRETATION') {
+      const columns = [['Concepts', payload.concepts], ['Open questions', payload.openQuestions], ['Possible next steps', payload.possibleNextSteps]]
+        .map(([label, items]) => items?.length ? '<section><strong>' + esc(label) + '</strong><ul>' + items.map(item => '<li>' + esc(item) + '</li>').join('') + '</ul></section>' : '')
+        .join('');
+      return head + '<p class="derived-summary">' + esc(payload.summary || '') + '</p>' + (columns ? '<div class="interpretation-columns">' + columns + '</div>' : '') + '<button class="button small" data-action="capture-ai-interpretation" data-id="' + attr(thought.id) + '">Use as an editable idea draft</button>' + (payload.sourceTruncated ? '<small class="revision-note">Source exceeded the AI input limit; interpretation used a bounded excerpt.</small>' : '') + meta;
+    }
+
+    if (type === 'AI_SUMMARY') {
+      return head + '<p class="derived-summary">' + esc(payload.summary || '') + '</p>' + meta;
+    }
+
+    // An unknown future artifact type. Render it as a readable key/value list
+    // rather than a raw JSON blob, so the person who wrote the thought never
+    // has to read machine output.
+    const fallback = Object.keys(payload).length
+      ? Object.entries(payload).map(([key, value]) => '<div class="revision-note"><strong>' + esc(key) + '</strong>: ' + esc(readableValue(value)) + '</div>').join('')
+      : '<p class="revision-note">This derived artifact has no readable content.</p>';
+    return head + fallback + meta;
+  }
+
+  function readableValue(value) {
+    if (value === null || value === undefined) return '';
+    if (Array.isArray(value)) return value.map(readableValue).join(', ');
+    if (typeof value === 'object') return Object.entries(value).map(([key, item]) => `${key}: ${readableValue(item)}`).join('; ');
+    return String(value);
+  }
+
   function renderAIConnectionsPanel(thoughtId, aiAvailable, compact = false) {
     const loading = state.aiConnections.loadingFor === thoughtId;
     const result = state.aiConnections.result?.thoughtId === thoughtId ? state.aiConnections.result : null;
@@ -856,7 +901,7 @@
       return `<div class="connection-row"><div class="connection-row-main"><div><button class="connection-target" data-open-thought="${attr(other?.id || '')}">${esc(other?.title || 'Missing thought')}</button><div class="connection-sub">${esc(r.type.replaceAll('_', ' '))} · ${esc(provenance)}${r.status === 'REMOVED' ? ' · removed' : ''}</div></div>${r.status === 'REMOVED' ? '<span class="status-pill graveyard">Removed</span>' : `<span class="provenance-pill ${isSuggested ? 'suggested' : 'confirmed'}">${isSuggested ? 'Proposed' : 'Confirmed'}</span>`}</div>${relationshipEvidenceMarkup(r)}${r.status !== 'REMOVED' ? `<div class="connection-row-actions"><small>${esc(date(r.createdAt))}</small><span>${isSuggested ? `<button class="button small" data-action="confirm-relationship" data-id="${attr(r.id)}">Confirm</button>` : ''} <button class="button ghost small" data-action="remove-relationship" data-id="${attr(r.id)}">Remove</button></span></div>` : ''}</div>`;
     }).join('') : '<div class="empty-state" style="padding:18px"><h3>No connections yet</h3><p>Connect this thought to another when a relationship becomes useful.</p></div>';
     const artifacts = t.derivedArtifacts || [];
-    const derivedContent = artifacts.length ? artifacts.map(a => '<div class="revision-card"><span class="derived-mark">AI-generated &middot; ' + esc(a.artifactType.replaceAll('_', ' ')) + '</span><p class="derived-summary">' + esc(a.payload?.summary || JSON.stringify(a.payload)) + '</p>' + (a.artifactType === 'AI_INTERPRETATION' ? '<div class="interpretation-columns">' + [['Concepts',a.payload?.concepts],['Open questions',a.payload?.openQuestions],['Possible next steps',a.payload?.possibleNextSteps]].map(([label,items]) => items?.length ? '<section><strong>' + esc(label) + '</strong><ul>' + items.map(item => '<li>' + esc(item) + '</li>').join('') + '</ul></section>' : '').join('') + '</div><button class="button small" data-action="capture-ai-interpretation" data-id="' + attr(t.id) + '">Use as an editable idea draft</button>' + (a.payload?.sourceTruncated ? '<small class="revision-note">Source exceeded the AI input limit; interpretation used a bounded excerpt.</small>' : '') : '') + '<div class="derived-meta">' + esc(a.provider) + (a.model ? ' &middot; ' + esc(a.model) : '') + ' &middot; ' + esc(date(a.generatedAt, true)) + ' &middot; Sources: ' + (a.sourceThoughtIds || []).length + ' thought</div></div>').join('') : '<p class="derived-empty">' + (ai.available ? 'No interpretation yet. The provider receives this thought only when you request interpretation.' : 'No AI is configured. IWTT still works fully; your thought stays local and no AI service is contacted.') + '</p>';
+    const derivedContent = artifacts.length ? artifacts.map(a => renderDerivedArtifact(a, t)).join('') : '<p class="derived-empty">' + (ai.available ? 'No interpretation yet. The provider receives this thought only when you request interpretation.' : 'No AI is configured. IWTT still works fully; your thought stays local and no AI service is contacted.') + '</p>';
     const graveyardAction = t.status === 'GRAVEYARD'
       ? `<button class="button primary" data-action="resurrect" data-id="${attr(t.id)}">Resurrect</button>`
       : `<button class="button" data-action="graveyard" data-id="${attr(t.id)}">Move to Graveyard</button>`;

@@ -6,7 +6,7 @@
 
 ## Optional provider
 
-The provider interface is in `iwtt/ai.py`. It includes summary, interpretation, tag suggestion, relationship-suggestion, link-assessment, and pairwise-comparison methods. The optional adapter speaks an OpenAI-compatible chat-completions API. In addition to environment configuration, Data & privacy can configure an endpoint for the current process session. This uses IWTT's existing local app process and does not require starting a second server or app.
+The provider interface is in `iwtt/ai.py`. It includes summary, interpretation, tag suggestion, link-assessment, and pairwise-comparison methods. The optional adapter speaks an OpenAI-compatible chat-completions API. In addition to environment configuration, Data & privacy can configure an endpoint for the current process session. This uses IWTT's existing local app process and does not require starting a second server or app.
 
 ```bash
 IWTT_AI_BASE_URL="http://127.0.0.1:1234/v1" \
