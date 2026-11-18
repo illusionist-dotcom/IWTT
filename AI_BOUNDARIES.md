@@ -8,11 +8,23 @@
 
 The provider interface is in `iwtt/ai.py`. It includes summary, interpretation, tag suggestion, link-assessment, and pairwise-comparison methods. The optional adapter speaks an OpenAI-compatible chat-completions API. In addition to environment configuration, Data & privacy can configure an endpoint for the current process session. This uses IWTT's existing local app process and does not require starting a second server or app.
 
+Three explicit provider kinds exist:
+
+| Kind | What it is | Cost |
+| --- | --- | --- |
+| OpenAI-compatible | any chat-completions endpoint (hosted or local), selected by `IWTT_AI_BASE_URL` | provider-dependent |
+| `ollama` | the same adapter pre-pointed at a local Ollama server (`http://127.0.0.1:11434/v1`); `IWTT_AI_BASE_URL` may override | free, local |
+| `mock` | `MockProvider`: deterministic, rule-based, never touches a network | free, offline |
+
+Select with `IWTT_AI_PROVIDER=ollama|mock|openai-compatible` (default: `openai-compatible`, which stays `NoAIProvider` until a base URL is set). An OpenAI-compatible endpoint's `/v1/models` surface can be listed (from Data & privacy, without changing the configured provider and without sending any thought content), so a local model can be picked from a dropdown. The mock exists for deterministic testing and demonstrations; wherever it appears it is visibly named as a mock, and its verdicts are as provisional as any provider's.
+
 ```bash
-IWTT_AI_BASE_URL="http://127.0.0.1:1234/v1" \
-IWTT_AI_MODEL="your-local-model" \
+IWTT_AI_PROVIDER=ollama \
+IWTT_AI_MODEL="llama3.2" \
 python -m iwtt.server
 ```
+
+This uses a locally installed Ollama server and costs nothing. Any other OpenAI-compatible endpoint works the same way through `IWTT_AI_BASE_URL`.
 
 If required, `IWTT_AI_API_KEY` may be set in the environment. The in-app API key is held in process memory and is not written to SQLite or exports. Do not put secrets in source control. A remote endpoint receives selected thought content only when the user explicitly invokes an AI action; use a local endpoint for fully local inference. Configuration alone does not generate summaries or interpretations. Interpretation is capped at 30,000 characters per text field, reports when the source was truncated, and returns summary, concepts, questions, and possible next steps as reviewable derived data.
 

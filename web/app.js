@@ -1100,7 +1100,7 @@
         <section class="data-card"><h2>Take your vault with you</h2><p>JSON is the documented reconstruction format. Markdown is a readable snapshot. A backup is a real SQLite database file saved locally and downloaded to you.</p><div class="data-actions"><button class="button primary" data-action="export-json">↓ Export canonical JSON</button><button class="button" data-action="export-md">↓ Export Markdown</button><button class="button" data-action="backup">↓ Backup SQLite</button><button class="button" data-action="choose-import">↑ Import JSON</button><input id="vault-import-file" class="inline-file" type="file" accept="application/json,.json"></div><span class="path-box">Import is additive and all-or-nothing. Existing IDs or conflicting tags stop the import; existing records are never overwritten.</span></section>
         <section class="data-card"><h2>Rebuildable data</h2><p>Search documents and AI artifacts are derived. Deleting them leaves original/current thought text, revisions, relationships, events, tags, and Graveyard history intact. Search rebuilds its local index automatically when needed.</p><div class="data-actions"><button class="button" data-action="rebuild-index">Rebuild local search index</button><button class="button danger" data-action="delete-derived">Delete all derived data</button></div></section>
         <section class="data-card demo-card"><h2>Fictional demo records</h2><p>Demo thoughts are visibly marked and excluded only when you remove them here. They demonstrate promotions, contradiction, a Graveyard item, resurrection, and an unconfirmed AI relationship.</p><p class="demo-warning">${demo.loaded ? `${demo.thoughts} demo thoughts · ${demo.relationships} demo connections are loaded.` : 'No demo records are currently loaded.'}</p><div class="data-actions">${demoButton}</div></section>
-        <section class="data-card ai-config-card"><h2>AI interpretation ? same app, optional provider</h2><p>Configure an OpenAI-compatible hosted AI endpoint here. IWTT sends selected thought text only after you press Interpret. No separate server or app is needed; your key stays in memory until IWTT closes and is never placed in the vault export.</p><form id="ai-config-form" class="ai-config-form"><label class="field">API base URL<input name="baseUrl" type="url" maxlength="500" placeholder="https://api.example.com/v1" required></label><div class="ai-config-row"><label class="field">Model<input name="model" maxlength="120" placeholder="model name" required></label><label class="field">API key<input name="apiKey" type="password" maxlength="1000" autocomplete="off" placeholder="Stored in memory only"></label></div><div class="data-actions"><button class="button primary" type="submit">Enable AI for this session</button><button class="button" type="button" data-action="disable-ai">Disconnect AI</button></div></form><span class="path-box">AI is optional. Hosted AI receives the selected thought text only when you request interpretation. The key is held in memory and excluded from exports.</span></section>
+        <section class="data-card ai-config-card"><h2>AI provider — same app, optional</h2><p>Choose a provider for this session. <strong>Ollama</strong> runs locally and costs nothing; an <strong>OpenAI-compatible endpoint</strong> can be local or hosted; the <strong>mock</strong> is deterministic and offline, useful for trying AI features safely. IWTT sends selected thought text only after you explicitly invoke an AI action. Keys and configuration stay in memory until IWTT closes and are never placed in the vault export.</p><form id="ai-config-form" class="ai-config-form"><label class="field">Provider<select name="providerKind" id="ai-provider-kind"><option value="ollama" selected>Ollama — local, free (recommended)</option><option value="endpoint">OpenAI-compatible endpoint</option><option value="mock">Mock — deterministic, no network</option></select></label><div id="ai-endpoint-fields"><label class="field">API base URL<input name="baseUrl" type="text" maxlength="500" placeholder="http://127.0.0.1:11434/v1"></label><div class="ai-config-row"><label class="field">Model<input name="model" maxlength="120" list="ai-model-list" placeholder="e.g. llama3.1"></label><label class="field">API key<input name="apiKey" type="password" maxlength="1000" autocomplete="off" placeholder="Stored in memory only"></label></div><datalist id="ai-model-list"></datalist></div><div class="data-actions"><button class="button" type="button" data-action="ai-list-models">List models</button><button class="button primary" type="submit">Enable AI for this session</button><button class="button" type="button" data-action="disable-ai">Disconnect AI</button></div></form><span class="path-box">AI is optional. A provider receives thought text only when you request an AI action. Nothing is saved to the vault about the key.</span></section>
       </div><aside class="data-section"><div class="privacy-callout"><strong>Private by design.</strong><p>There is no account, sync, analytics, advertising, or network dependency for basic use. When served on loopback, the vault stays on this computer. Do not bind to a public network unless you add appropriate access controls.</p></div>
         <section class="data-card"><h2>Vault contents</h2><div class="data-stats"><div class="data-stat"><strong>${stats.totalThoughts}</strong><small>Thoughts</small></div><div class="data-stat"><strong>${stats.revisions}</strong><small>Revisions</small></div><div class="data-stat"><strong>${stats.relationships}</strong><small>Confirmed links</small></div><div class="data-stat"><strong>${stats.suggestedRelationships}</strong><small>AI proposals</small></div><div class="data-stat"><strong>${stats.events}</strong><small>History events</small></div><div class="data-stat"><strong>${stats.tags}</strong><small>Tags</small></div></div></section>
         <section class="data-card"><h2>Local storage</h2><p>SQLite · v${esc(health.version)}. The database survives app restarts.</p><span class="path-box">${esc(health.databasePath)}</span><p style="margin-top:10px">Backup files are stored in <code>${esc(health.dataDirectory)}/backups</code> and downloaded via the browser.</p></section>
@@ -1199,6 +1199,22 @@
       await api('/api/ai/configure', { method: 'POST', body: { enabled: false } });
       toast('AI disconnected for this session.');
       return render();
+    }
+    if (action === 'ai-list-models') {
+      const form = button.closest('form');
+      const values = new FormData(form);
+      const kind = String(values.get('providerKind') || 'ollama');
+      try {
+        const { data } = await api('/api/ai/models', { method: 'POST', body: {
+          provider: kind,
+          baseUrl: values.get('baseUrl') || '',
+          apiKey: values.get('apiKey') || '',
+        } });
+        const list = document.getElementById('ai-model-list');
+        list.innerHTML = (data.models || []).map(model => `<option value="${attr(model)}"></option>`).join('');
+        toast(`${data.count} models available at the endpoint.`);
+      } catch (error) { toast(error.message, 'error'); }
+      return;
     }
     if (action === 'toggle-search-graveyard') { state.includeGraveyard = !state.includeGraveyard; return render(); }
     if (action === 'graveyard') {
@@ -1367,13 +1383,27 @@
     if (form.id === 'ai-config-form') {
       event.preventDefault();
       const values = new FormData(form);
+      const kind = String(values.get('providerKind') || 'ollama');
       const submit = form.querySelector('[type=submit]');
       submit.disabled = true;
       try {
-        await api('/api/ai/configure', { method: 'POST', body: {
-          baseUrl: values.get('baseUrl'), model: values.get('model'), apiKey: values.get('apiKey') || '',
-        } });
-        toast('AI enabled for this session. The key is not saved in the vault.');
+        if (kind === 'mock') {
+          await api('/api/ai/configure', { method: 'POST', body: { provider: 'mock' } });
+          toast('Mock AI enabled for this session: deterministic and offline.');
+        } else if (kind === 'ollama') {
+          await api('/api/ai/configure', { method: 'POST', body: {
+            provider: 'ollama',
+            baseUrl: values.get('baseUrl') || '',
+            model: values.get('model'),
+          } });
+          toast('Ollama enabled for this session. Models run locally and cost nothing.');
+        } else {
+          await api('/api/ai/configure', { method: 'POST', body: {
+            provider: 'openai-compatible',
+            baseUrl: values.get('baseUrl'), model: values.get('model'), apiKey: values.get('apiKey') || '',
+          } });
+          toast('AI enabled for this session. The key is not saved in the vault.');
+        }
         await render();
       } catch (error) { toast(error.message, 'error'); submit.disabled = false; }
       return;
@@ -1508,6 +1538,11 @@
   });
 
   document.addEventListener('change', async event => {
+    if (event.target.id === 'ai-provider-kind') {
+      const fields = document.getElementById('ai-endpoint-fields');
+      if (fields) fields.style.display = event.target.value === 'mock' ? 'none' : '';
+      return;
+    }
     if (event.target.id === 'thought-file-input' && event.target.files?.length) {
       return readThoughtFile(event.target.files[0]);
     }

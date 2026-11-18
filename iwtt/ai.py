@@ -117,6 +117,126 @@ class NoAIProvider(AIProvider):
     source = "disabled"
 
 
+#: Small stopword set for the mock provider's deterministic tokeniser.  Kept
+#: local to this module on purpose: the mock must not import the recall layer
+#: (the layering boundary forbids an ai -> recall dependency).
+_MOCK_STOPWORDS = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from",
+    "has", "have", "how", "i", "if", "in", "into", "is", "it", "its", "my",
+    "no", "not", "of", "on", "or", "our", "so", "some", "than", "that", "the",
+    "their", "then", "there", "these", "this", "to", "was", "we", "were",
+    "what", "when", "which", "who", "will", "with", "would", "you", "your",
+})
+
+
+def _mock_tokens(text: str, *, min_length: int = 3, limit: int = 12) -> list[str]:
+    """Deterministic distinctive-token extraction for the mock provider."""
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for raw in str(text or "").lower().split():
+        word = "".join(char for char in raw if char.isalnum())
+        if len(word) < min_length or word in _MOCK_STOPWORDS or word in seen:
+            continue
+        seen.add(word)
+        tokens.append(word)
+        if len(tokens) >= limit:
+            break
+    return tokens
+
+
+class MockProvider(AIProvider):
+    """Deterministic offline provider for tests and demonstrations.
+
+    Never contacts a network.  Every method returns stable, rule-based output
+    derived only from the supplied text, so a whole AI pipeline (link checks,
+    sweeps, thinking-partner sessions) can be exercised repeatably without an
+    API key or a local model server.  Its verdicts are as provisional as any
+    provider's: proposals, never canonical facts.
+    """
+
+    name = "MockProvider (deterministic)"
+    available = True
+    source = "mock"
+
+    def summarize(self, thought: dict[str, Any]) -> str:
+        text = " ".join(str(thought.get("currentText") or "").split())
+        if not text:
+            return "The thought is empty, so there is nothing to summarise."
+        sentences = [part.strip() for part in text.split(".") if part.strip()]
+        first = sentences[0] if sentences else text
+        summary = f"Mock summary: the capture begins \"{first[:180]}\""
+        summary += "." if summary.endswith(".") else "."
+        if len(sentences) > 1:
+            summary += f" A later passage continues \"{sentences[1][:140]}\"."
+        return summary[:600]
+
+    def interpret(self, thought: dict[str, Any]) -> dict[str, Any]:
+        current = str(thought.get("currentText") or "")
+        original = str(thought.get("originalText") or "")
+        tokens = _mock_tokens(f"{thought.get('title') or ''} {current}")
+        summary = self.summarize(thought)
+        concepts = tokens[:5]
+        questions = [
+            f"What would change your mind about \"{tokens[0]}\"" if tokens
+            else "What question does this capture answer?",
+            "Which existing thought does this extend or contradict?",
+        ]
+        steps = [
+            "Capture the outcome as a new thought when you act on this.",
+            "Link this to the thought it responds to, if one exists.",
+        ]
+        return {
+            "summary": summary,
+            "concepts": concepts,
+            "openQuestions": questions,
+            "possibleNextSteps": steps,
+            "sourceTruncated": len(original) > 30_000 or len(current) > 30_000,
+            "processedCharacters": min(len(original), 30_000) + min(len(current), 30_000),
+        }
+
+    def suggest_tags(self, thought: dict[str, Any]) -> list[str]:
+        return _mock_tokens(thought.get("currentText") or "", limit=5)
+
+    def _link_verdict(self, source_text: str, target_text: str) -> dict[str, Any]:
+        """Deterministic lexical-overlap judgement, mirroring the real shape."""
+        shared = sorted(set(_mock_tokens(source_text)) & set(_mock_tokens(target_text)))
+        if shared:
+            listed = ", ".join(shared[:4])
+            return {
+                "linked": True,
+                "type": "RELATED_TO",
+                "reason": f"Both texts use the distinctive terms: {listed}.",
+            }
+        return {
+            "linked": False,
+            "type": "",
+            "reason": "The two texts share no distinctive terms, so the mock finds no link. "
+                      "A different model may still see one.",
+        }
+
+    def assess_links(self, thought: dict[str, Any], candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        source_text = f"{thought.get('displayTitle') or thought.get('title') or ''} {thought.get('currentText') or ''}"
+        verdicts: list[dict[str, Any]] = []
+        for candidate in candidates[:16]:
+            target_text = (
+                f"{candidate.get('displayTitle') or candidate.get('title') or ''} "
+                f"{candidate.get('currentText') or ''}"
+            )
+            verdict = self._link_verdict(source_text, target_text)
+            verdicts.append({
+                "targetId": candidate.get("id"),
+                "linked": verdict["linked"],
+                "type": verdict["type"],
+                "reason": verdict["reason"],
+            })
+        return verdicts
+
+    def compare_thoughts(self, first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
+        first_text = f"{first.get('displayTitle') or first.get('title') or ''} {first.get('currentText') or ''}"
+        second_text = f"{second.get('displayTitle') or second.get('title') or ''} {second.get('currentText') or ''}"
+        return self._link_verdict(first_text, second_text)
+
+
 class OpenAICompatibleProvider(AIProvider):
     """Minimal opt-in adapter for a local OpenAI-compatible chat endpoint."""
 
@@ -171,6 +291,46 @@ class OpenAICompatibleProvider(AIProvider):
         if not isinstance(content, str) or not content.strip():
             raise RuntimeError("The configured AI endpoint returned an empty response")
         return content.strip()
+
+    def list_models(self) -> list[str]:
+        """List model ids from the endpoint's OpenAI-compatible /v1/models.
+
+        Supported by Ollama's compatibility layer, llama.cpp's server, LM
+        Studio, and hosted providers alike.  Read-only; it sends no thought
+        content and changes nothing.
+        """
+        if self.base_url.endswith("/v1"):
+            url = self.base_url + "/models"
+        elif self.base_url.endswith("/chat/completions"):
+            url = self.base_url.replace("/chat/completions", "/models")
+        else:
+            url = self.base_url + "/v1/models"
+        headers = {}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=min(self.timeout, 20)) as response:
+                raw = response.read(MAX_RESPONSE_BYTES + 1)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise RuntimeError(f"The configured AI endpoint did not return a model list: {exc}") from exc
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise RuntimeError("The configured AI endpoint returned an oversized model list")
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("The configured AI endpoint returned an invalid model list") from exc
+        data = payload.get("data") if isinstance(payload, dict) else payload
+        if not isinstance(data, list):
+            raise RuntimeError("The configured AI endpoint returned an unexpected model list")
+        models: list[str] = []
+        for item in data:
+            model_id = item.get("id") if isinstance(item, dict) else item
+            if isinstance(model_id, str) and model_id.strip():
+                models.append(model_id.strip())
+        if not models:
+            raise RuntimeError("The configured AI endpoint offers no models")
+        return sorted(set(models))[:100]
 
     def summarize(self, thought: dict[str, Any]) -> str:
         system = (
@@ -360,9 +520,27 @@ class OpenAICompatibleProvider(AIProvider):
         return {"linked": linked, "type": relationship_type, "reason": reason}
 
 
+#: Preset endpoint for a locally installed Ollama server (zero-cost path).
+OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
+
+
 def provider_from_environment() -> AIProvider:
-    """No network capability exists unless an endpoint is explicitly configured."""
+    """No network capability exists unless an endpoint is explicitly configured.
+
+    ``IWTT_AI_PROVIDER`` selects the kind:
+
+    * unset or ``openai-compatible`` — an OpenAI-compatible chat endpoint
+      (hosted or local) configured through ``IWTT_AI_BASE_URL``;
+    * ``ollama`` — the same adapter pre-pointed at a local Ollama server, so
+      ``IWTT_AI_BASE_URL`` only needs setting to override the default;
+    * ``mock`` — the deterministic :class:`MockProvider` (no network at all).
+    """
+    kind = os.environ.get("IWTT_AI_PROVIDER", "openai-compatible").strip().lower()
+    if kind == "mock":
+        return MockProvider()
     base_url = os.environ.get("IWTT_AI_BASE_URL", "").strip()
+    if kind == "ollama" and not base_url:
+        base_url = OLLAMA_BASE_URL
     if not base_url:
         return NoAIProvider()
     model = os.environ.get("IWTT_AI_MODEL", "local-model").strip() or "local-model"

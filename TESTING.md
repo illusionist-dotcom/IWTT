@@ -1,4 +1,4 @@
-# IWTT v0.2 Testing and Verification
+﻿# IWTT v0.2 Testing and Verification
 
 Four gates, run in this order. All four are green in the current tree.
 
@@ -8,10 +8,10 @@ tests decode UTF-8 explicitly rather than relying on the host ANSI code page. Wi
 11 performance measurements are recorded separately in `BENCHMARKS.md`.
 
 ```bash
-python -m unittest discover -s tests -v        # gate 1 — 173 tests
-python scripts/verify_release.py               # gate 2 — the v0.1 contract
-python scripts/verify_release_v02.py           # gate 3 — the v0.2 contract
-python scripts/benchmark_recall.py --suite     # gate 4 — measured performance
+python -m unittest discover -s tests -v        # gate 1 â€” 199 tests
+python scripts/verify_release.py               # gate 2 â€” the v0.1 contract
+python scripts/verify_release_v02.py           # gate 3 â€” the v0.2 contract
+python scripts/benchmark_recall.py --suite     # gate 4 â€” measured performance
 ```
 
 Plus two hygiene checks before any commit:
@@ -23,7 +23,7 @@ git status --short        # nothing unintended is about to be committed
 
 ---
 
-## Gate 1 — Automated tests (131)
+## Gate 1 â€” Automated tests (131)
 
 Tests use temporary directories and temporary SQLite databases; they never touch the
 user's vault.
@@ -59,7 +59,7 @@ sacred contract's only real proof:
 3. exercise recall and the graph until both are demonstrably populated;
 4. **delete all v0.2 derived data**;
 5. verify thoughts, ids, original text, revisions, events, relationships and
-   provenance survive — compared byte-for-byte against a raw `sqlite3` snapshot, and
+   provenance survive â€” compared byte-for-byte against a raw `sqlite3` snapshot, and
    by `canonical_fingerprint()` equality;
 6. rebuild from canonical records only;
 7. verify recall works again, with the same ranking it had before deletion.
@@ -70,8 +70,8 @@ It also covers `remove_demo()` (the production deletion path) and proves that
 ### Migration tests
 
 `test_migration_v01_to_v02.py` builds a **byte-faithful v0.1-format database** with
-raw `sqlite3` — three thoughts (one untitled, one edited, one in the Graveyard), four
-revisions, one tag, one `AI_SUGGESTED`/`SUGGESTED` relationship, three events — where
+raw `sqlite3` â€” three thoughts (one untitled, one edited, one in the Graveyard), four
+revisions, one tag, one `AI_SUGGESTED`/`SUGGESTED` relationship, three events â€” where
 every row satisfies v0.1's own invariants, including the one `get_thought` enforces.
 It then asserts that opening the file with v0.2 leaves every canonical row identical,
 preserves ids and original text, keeps `schema_version = '1'`, adds no recall table
@@ -79,13 +79,13 @@ before it should, leaves v0.1 `search()` behaving identically, makes recall work
 migrated data, survives rollback to a file v0.1 can still open, is idempotent, and
 still imports a v0.1-shaped JSON export.
 
-That module owns `v01_vault()` and `raw_snapshot()` — the single definition of "a
+That module owns `v01_vault()` and `raw_snapshot()` â€” the single definition of "a
 v0.1-format file" in this repository. `scripts/verify_release_v02.py` imports them
 rather than keeping a second copy that could drift.
 
 ---
 
-## Gate 2 — v0.1 release workflow
+## Gate 2 â€” v0.1 release workflow
 
 ```bash
 python scripts/verify_release.py
@@ -99,7 +99,7 @@ deletion with canonical preservation, restart persistence, and backup integrity.
 
 ---
 
-## Gate 3 — v0.2 release workflow
+## Gate 3 â€” v0.2 release workflow
 
 ```bash
 python scripts/verify_release_v02.py
@@ -117,15 +117,15 @@ and exiting non-zero on failure:
 | `ambiguityRefusal` | A vague query yields `AMBIGUOUS` with the tied count named in the message and `orderingIsTieBreakNotJudgement: true` |
 | `honestAbsence` | An absent query yields `NO_MATCH` with zero results and the five honesty statements |
 | `provenancePreserved` | `USER_CONFIRMED` and `AI_SUGGESTED` stay distinct; a suggestion is still `SUGGESTED` with `confirmedBy: null` after being searched, expanded and rendered |
-| `pathHonesty` | A nonexistent path returns `found: false` with a reason — no invented edge |
+| `pathHonesty` | A nonexistent path returns `found: false` with a reason â€” no invented edge |
 | `queryMemory` | Inspectable history and learned queries, resettable, canonical untouched, index stats before/after |
 | `graphViewModel` | `entityType` on every node, no persisted layout, no coordinates, canonical/derived fields declared |
 | `exportContract` / `importRoundTrip` | `iwtt-vault-export` at **schema version 1**, canonical-only export imports with an identical fingerprint and working recall |
-| `migrationFromV01` | The full list in `V0.1_TO_V0.2_MIGRATION.md` §5 |
+| `migrationFromV01` | The full list in `V0.1_TO_V0.2_MIGRATION.md` Â§5 |
 | `offlineNoAI` | `NoAIProvider` by default, all four config flags false, **zero third-party imports**, honesty statements present |
 | `externalFoundation` | Not implemented, not canonical, not persisted, no storage created, closed vocabularies, every deferred edge names a blocker, no canonical schema change |
 | `httpSurface` | Sixteen GET routes and three write routes answer, every payload is camelCase, and diagnostics for an unknown id states an explicit "no such thought" rather than pretending |
-| `aiLinkSurface` | With no provider every AI route answers **503**. With a provider, a link check, a pairwise comparison and a vault sweep all run — and between them they create **zero** relationships, the analysis is stored as an `AI_LINK_ANALYSIS` derived artifact, and a verdict is marked `AI_SUGGESTED` |
+| `aiLinkSurface` | With no provider every AI route answers **503**. With a provider, a link check, a pairwise comparison and a vault sweep all run â€” and between them they create **zero** relationships, the analysis is stored as an `AI_LINK_ANALYSIS` derived artifact, and a verdict is marked `AI_SUGGESTED` |
 
 ### AI link detection tests
 
@@ -172,7 +172,7 @@ machine output. The Node checks skip cleanly when Node is not installed.
 
 ---
 
-## Gate 4 — Measured performance
+## Gate 4 â€” Measured performance
 
 ```bash
 python scripts/benchmark_recall.py --suite --queries 200

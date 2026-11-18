@@ -21,7 +21,9 @@ from urllib.parse import parse_qs, unquote, urlparse
 from .ai import (
     AIConfigurationError,
     AIUnavailable,
+    MockProvider,
     NoAIProvider,
+    OLLAMA_BASE_URL,
     OpenAICompatibleProvider,
     provider_from_environment,
     validate_endpoint,
@@ -370,22 +372,62 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.vault.ai_provider.source = "disabled"
                 self._send_json(200, {"available": False, "provider": "NoAIProvider", "model": None, "source": "disabled"})
                 return
-            base_url = payload.get("baseUrl")
-            model = payload.get("model")
-            api_key = payload.get("apiKey")
-            if not all(isinstance(value, str) for value in (base_url, model, api_key)):
-                raise ValidationError("Endpoint, model and API key must be text")
-            base_url, model, api_key = base_url.strip(), model.strip(), api_key.strip()
+            kind = str(payload.get("provider") or "openai-compatible").strip().lower()
+            if kind == "mock":
+                # Deterministic, offline, for tests and demonstrations. It is
+                # visibly named as a mock wherever the provider is shown.
+                self.vault.ai_provider = MockProvider()
+                self._send_json(200, {
+                    "available": True,
+                    "provider": self.vault.ai_provider.name,
+                    "model": None,
+                    "source": "mock",
+                })
+                return
+            if kind == "ollama":
+                base_url = str(payload.get("baseUrl") or "").strip() or OLLAMA_BASE_URL
+                if not payload.get("model"):
+                    raise ValidationError("Choose a model for the Ollama provider")
+                model = str(payload.get("model")).strip()
+                api_key = ""
+            else:
+                base_url = payload.get("baseUrl")
+                model = payload.get("model")
+                api_key = payload.get("apiKey")
+                if not all(isinstance(value, str) for value in (base_url, model, api_key)):
+                    raise ValidationError("Endpoint, model and API key must be text")
+                base_url, model, api_key = base_url.strip(), model.strip(), api_key.strip()
+                if not model or len(model) > 120 or len(api_key) > 1000:
+                    raise ValidationError("Endpoint, model or API key is too long")
             try:
                 base_url = validate_endpoint(base_url)
             except AIConfigurationError as exc:
                 raise ValidationError(str(exc)) from exc
-            if not model or len(model) > 120 or len(api_key) > 1000:
-                raise ValidationError("Endpoint, model or API key is too long")
             self.vault.ai_provider = OpenAICompatibleProvider(
                 base_url, model, api_key or None, source="runtime"
             )
             self._send_json(200, {"available": True, "provider": self.vault.ai_provider.name, "model": model, "source": "runtime"})
+            return
+        if path == "/api/ai/models":
+            # Lists model ids from an OpenAI-compatible endpoint without
+            # changing the configured provider. No thought content is sent.
+            if not isinstance(payload, dict):
+                raise ValidationError("Request body must be an object")
+            base_url = str(payload.get("baseUrl") or "").strip()
+            if str(payload.get("provider") or "").strip().lower() == "ollama" and not base_url:
+                base_url = OLLAMA_BASE_URL
+            api_key = payload.get("apiKey")
+            if not isinstance(base_url, str) or (api_key is not None and not isinstance(api_key, str)):
+                raise ValidationError("Endpoint and API key must be text")
+            try:
+                probe = OpenAICompatibleProvider(base_url, "model-list", api_key or None, source="runtime")
+            except AIConfigurationError as exc:
+                raise ValidationError(str(exc)) from exc
+            try:
+                models = probe.list_models()
+            except RuntimeError as exc:
+                raise AIUnavailable(str(exc)) from exc
+            self._send_json(200, {"models": models, "count": len(models)})
             return
         if path == "/api/thoughts":
             if not isinstance(payload, dict):
