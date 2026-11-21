@@ -119,17 +119,31 @@ Relationship origin and confirmation are separate:
 
 The UI marks proposals and requires an explicit Confirm action. It never silently promotes an AI proposal to confirmed knowledge.
 
-## Recall never uses AI
+## Recall's scored path never uses AI
 
-v0.2 adds a substantial retrieval layer, and none of it is AI:
+v0.2 adds a substantial retrieval layer whose ranking is entirely local:
 
-- `embeddings_enabled`, `semantic_stage_enabled`, `ai_required` and `network_required` are all **`False`** in `RecallConfig`, and there is no code path that could set them from the environment.
-- Matching is tokens, morphology and aliases, character trigrams, bounded `difflib` similarity, and stored relationships. Nothing is embedded, nothing is sent anywhere, and no model is loaded.
-- **The AI link review is not part of recall.** Candidate selection (`iwtt/recall/candidates.py`) is deterministic and offline; it reads canonical data and the rebuildable indexes and calls no provider. The provider is invoked only by the three explicit HTTP routes above, only when the user presses a button. Recall ranking is untouched by any of it.
-- Every recall outcome carries an `honesty` block stating this in plain language — `embeddings`: *"NOT IMPLEMENTED. IWTT v0.2 contains no embedding model, no vector index and no semantic stage. Retrieval is lexical + fuzzy + graph, and says so."*; `ai`: *"Not used. Recall ran entirely offline against derived indexes."*; `network`: *"None. No request left this process."*; `probabilisticConfidence`: *"Scores are deterministic weighted sums, not probabilities."*
+- `embeddings_enabled`, `semantic_stage_enabled`, `ai_required` and `network_required` are all **`False`** in `RecallConfig` by default, and no environment variable flips them.
+- Scored matching is tokens, morphology and aliases, character trigrams, bounded `difflib` similarity, and stored relationships. The ranking embeds nothing, sends nothing, and loads no model.
+- **The AI link review is not part of recall.** Candidate selection (`iwtt/recall/candidates.py`) is deterministic and offline; it reads canonical data and the rebuildable indexes and calls no provider. The provider is invoked only by explicit HTTP routes, only when the user presses a button. Recall ranking is untouched by any of it.
+- Every recall outcome carries an `honesty` block. With embeddings off it says embeddings are OFF, `ai`: *"Not used. Recall ran entirely offline against derived indexes."*, `network`: *"None. No request left this process."*, `probabilisticConfidence`: *"Scores are deterministic weighted sums, not probabilities."*
 - Derived query-outcome memory is arithmetic over four signed constants with a documented half-life — not training, not a model, and erasable in one call.
 - Clusters are labelled `AUTOMATICALLY_DISCOVERED_CLUSTER`. No generated title, summary or grouping is ever presented as something the user wrote.
-- Fuzzy recall is **not** solved by calling an LLM, and no "semantic AI" language is used anywhere in the product or the docs.
+- Fuzzy recall is **not** solved by calling an LLM.
+
+### v0.3: the opt-in semantic stage
+
+Meaning-level matching exists, but only as a **separate, labelled section** of
+Find My Thought — “Same meaning, different words”. It never changes the scored
+ranking, its weights, or its refusal behaviour. The four defaults above stay
+`False`. An embedding index is built only when a provider has been configured and
+the user explicitly presses *Build / update index*; Ollama is the preferred
+zero-cost provider and the offline `MockProvider` makes the whole path testable
+without a server or key. At recall time the provider receives **only the query
+text** (one request), and every neighbour it suggests is a real `thought_id`
+read from the vault, never an invented memory. When the stage runs, the honesty
+block states the model used and that one request left the process. See
+`RECALL_ENGINE.md` §12.
 
 `scripts/verify_release_v02.py` asserts the default provider is `NoAIProvider`, that all four flags are false, and that `iwtt/` imports nothing outside the standard library.
 

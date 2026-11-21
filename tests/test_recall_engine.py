@@ -301,7 +301,10 @@ class ExplanationTestCase(RecallFixture):
     def test_honesty_records_say_what_was_and_was_not_used(self) -> None:
         outcome = self.recall("enemy adaptation")
         honesty = outcome.honesty
-        self.assertIn("NOT IMPLEMENTED", honesty["embeddings"])
+        # v0.3: semantic retrieval is real but opt-in; recall says OFF until
+        # the user explicitly builds an embedding index.
+        self.assertIn("OFF", honesty["embeddings"])
+        self.assertIn("No embedding index has been built", honesty["embeddings"])
         self.assertIn("not used", honesty["ai"].lower())
         self.assertIn("none", honesty["network"].lower())
         self.assertIn("deterministic", honesty["probabilisticConfidence"].lower())

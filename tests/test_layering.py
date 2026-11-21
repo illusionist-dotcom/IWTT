@@ -701,8 +701,11 @@ class LocalFirstTestCase(unittest.TestCase):
 
         outcome = self.vault.recall("enemy adaptation")
         honesty = outcome.honesty
-        self.assertIn("NOT IMPLEMENTED", honesty["embeddings"])
-        self.assertIn("no semantic stage", honesty["embeddings"])
+        # v0.3: the semantic stage exists but is opt-in. With no index built
+        # it must say OFF, never claim semantic understanding, and never
+        # pretend recall needs AI or a network.
+        self.assertIn("OFF", honesty["embeddings"])
+        self.assertIn("No embedding index has been built", honesty["embeddings"])
         self.assertIn("None claimed", honesty["semanticUnderstanding"],
                       "IWTT must not claim to understand meaning it does not model")
         self.assertIn("Not used", honesty["ai"])

@@ -22,6 +22,7 @@
       timer: null,
       breakdownFor: null,
       breakdown: null,
+      semanticIndex: null,
     },
     // v0.2 — Connection Explorer V2
     graph: { rootId: null, sourceId: '', targetId: '', path: null, neighbourhood: null, depth: 1, selectedId: null },
@@ -331,13 +332,49 @@
       const { data } = await api(recallQuery());
       state.recall.outcome = data;
       state.recall.loading = false;
-      if (region) region.innerHTML = recallResults(data);
+      if (region) region.innerHTML = recallResults(data, state.recall.semanticIndex);
       if (summary) summary.textContent = recallSummaryLine(data);
     } catch (error) {
       state.recall.loading = false;
       if (summary) summary.textContent = error.message;
       if (region) region.innerHTML = `<div class="empty-state"><div class="empty-icon">!</div><h3>Recall failed</h3><p>${esc(error.message)}</p></div>`;
     }
+  }
+
+  async function buildSemanticIndex(button) {
+    const original = button?.textContent || 'Build / update index';
+    if (button) { button.disabled = true; button.textContent = 'Building…'; }
+    let total = 0;
+    let model = null;
+    try {
+      // Bounded loop: each call embeds at most one batch, so the UI stays
+      // responsive and a huge vault cannot lock the tab. The server decides
+      // what remains; we stop as soon as it reports the index is current.
+      for (let pass = 0; pass < 40; pass += 1) {
+        const { data } = await api('/api/recall/embeddings/build', { method: 'POST', body: { limit: 200 } });
+        total += data.built || 0;
+        model = data.model || model;
+        if (button) button.textContent = `Building… ${total} embedded`;
+        if (data.upToDate || !data.remaining) break;
+      }
+      toast(total
+        ? `${total} thought(s) embedded${model ? ` with ${model}` : ''}. Semantic results now appear as a separate section.`
+        : 'The semantic index was already up to date.');
+    } catch (error) {
+      toast(error.message, 'error');
+    } finally {
+      if (button) { button.disabled = false; button.textContent = original; }
+    }
+    return render();
+  }
+
+  async function eraseSemanticIndex() {
+    if (!window.confirm('Erase the semantic index? It is derived data: your thoughts and connections are untouched, and you can rebuild it at any time.')) return;
+    try {
+      const { data } = await api('/api/recall/embeddings', { method: 'DELETE' });
+      toast(`${data.erased} vector(s) erased. Nothing canonical changed.`);
+    } catch (error) { toast(error.message, 'error'); }
+    return render();
   }
 
   function recallSummaryLine(data) {
@@ -348,7 +385,9 @@
       data.stateLabel || data.state,
     ];
     if (typeof ms === 'number') parts.push(`${ms.toFixed(1)} ms`);
-    parts.push('local · no AI · no network');
+    parts.push(data.semantic?.enabled
+      ? 'scored locally · separate semantic section'
+      : 'local · no AI · no network');
     return parts.join(' · ');
   }
 
@@ -460,31 +499,75 @@
     </section>`;
   }
 
-  function recallResults(outcome) {
-    if (!outcome) return recallEmpty();
+  function renderSemanticSection(outcome) {
+    const semantic = outcome?.semantic;
+    if (!semantic || (!semantic.enabled && !semantic.indexedCount)) return '';
+    if (!semantic.enabled) {
+      return `<section class="panel semantic-panel semantic-off"><div class="section-head" style="margin-top:0"><h2>Semantic stage</h2><span class="section-meta">OFF</span></div><p class="micro">${esc(semantic.reason || 'The semantic stage is off.')}</p></section>`;
+    }
+    const entries = (semantic.results || []).map(entry => `
+      <li class="semantic-hit">
+        <span class="semantic-score">${Math.round((entry.similarity || 0) * 100)}%</span>
+        <span class="semantic-body"><button class="connection-target" data-open-thought="${attr(entry.thoughtId)}">${esc(entry.displayTitle || entry.thoughtId.slice(0, 8))}</button>
+        ${entry.preview ? `<small>${esc(entry.preview)}</small>` : ''}</span>
+      </li>`).join('');
+    return `<section class="panel semantic-panel">
+        <div class="section-head" style="margin-top:0"><h2>Same meaning, different words</h2><span class="section-meta">SEMANTIC · LABELLED SEPARATELY · NOT SCORED MATCHES</span></div>
+        <p class="micro">Neighbours by embedding similarity (${esc(semantic.model || 'unknown model')}). These are ranked hints from an explicitly built vector index — they never entered the scored ranking above, and a high percentage is not proof of relevance. ${semantic.omittedAlreadyReturned ? `${semantic.omittedAlreadyReturned} neighbour(s) already appear in the ranked list.` : ''}</p>
+        <ul class="semantic-list">${entries || '<li class="micro">Nothing cleared the similarity floor for this query.</li>'}</ul>
+      </section>`;
+  }
+
+  function semanticIndexCard(semanticIndex) {
+    const info = semanticIndex || {};
+    const status = info.available
+      ? `<strong>${info.count}</strong> vector(s) · model <code>${esc(info.model || 'unknown')}</code> · ${info.dimensions} dimensions · built ${esc(date(info.builtAt, true))}`
+      : 'No semantic index has been built. Recall works fully without it.';
+    return `<section class="panel semantic-panel">
+        <div class="section-head" style="margin-top:0"><h2>Semantic index (optional)</h2><span class="section-meta">DERIVED · OPT-IN · ERASABLE</span></div>
+        <p class="micro">${status}</p>
+        <p class="micro">Building sends each thought's indexed text to the configured AI provider (preferably a local Ollama embedding model such as <code>nomic-embed-text</code>) and stores only the resulting vectors. Similarity then appears as a separate “same meaning, different words” section under Find My Thought. It never changes the scored ranking, and deleting it loses nothing.</p>
+        <div class="data-actions">
+          <button class="button" data-action="build-semantic-index" ${info.available ? '' : ''}>Build / update index</button>
+          ${info.available ? '<button class="button danger" data-action="erase-semantic-index">Erase semantic index</button>' : ''}
+        </div>
+      </section>`;
+  }
+
+  function recallResults(outcome, semanticIndex) {
+    if (!outcome) {
+      return `${recallEmpty()}${semanticIndexCard(semanticIndex)}`;
+    }
     const results = outcome.results || [];
     const cards = results.map(result => recallCard(result, outcome)).join('');
+    const semanticOn = outcome.semantic?.enabled;
     return `${recallBanner(outcome)}
       ${results.length ? `<div class="section-head" style="margin-top:0"><h2>Ranked candidates</h2><span class="section-meta">ORIGINAL TEXT ALWAYS SHOWN</span></div><div class="recall-stack">${cards}</div>` : ''}
+      ${renderSemanticSection(outcome)}
       <div id="recall-breakdown">${recallBreakdownPanel()}</div>
       <section class="panel honesty-panel">
-        <div class="section-head" style="margin-top:0"><h2>How this answer was produced</h2><span class="section-meta">NO AI · NO NETWORK · NO EMBEDDINGS</span></div>
+        <div class="section-head" style="margin-top:0"><h2>How this answer was produced</h2><span class="section-meta">${semanticOn ? 'SEMANTIC STAGE ON · SCORED RANKING STAYED DETERMINISTIC' : 'NO AI · NO NETWORK · NO EMBEDDINGS'}</span></div>
         <ul class="honesty-list">
           <li><strong>Retrieval</strong>: lexical tiers (exact › word form › prefix › substring), character trigrams, bounded fuzzy similarity, IDF weighting, coverage, titles, tags, time, lifecycle and saved connections.</li>
           <li><strong>Ranking</strong>: a deterministic weighted sum with a total-order tie-break. The same vault, query and configuration always produce the same order.</li>
-          <li><strong>Not implemented</strong>: ${esc(outcome.honesty?.embeddings || 'no embeddings, no vector index, no semantic stage.')}</li>
+          <li><strong>Embeddings</strong>: ${esc(outcome.honesty?.embeddings || 'off — no embedding index has been built.')}</li>
+          <li><strong>Network</strong>: ${esc(outcome.honesty?.network || 'none. No request left this process.')}</li>
           <li><strong>Graph expansion</strong>: enriches candidates only; it never replaces text retrieval, and it never invents a connection.</li>
         </ul>
         <details class="sub-details"><summary>Stage timings &amp; index state</summary><pre class="formula">${esc(JSON.stringify({ timingsMs: outcome.timingsMs, indexState: outcome.indexState, graph: outcome.graph?.expansion }, null, 2))}</pre></details>
-      </section>`;
+      </section>
+      ${semanticIndexCard(semanticIndex)}`;
   }
 
   async function renderRecall() {
     let outcome = null;
+    let semanticIndex = null;
     if (state.recall.query) {
       try { outcome = (await api(recallQuery())).data; } catch (error) { outcome = null; toast(error.message, 'error'); }
     }
+    try { semanticIndex = (await api('/api/recall/embeddings')).data; } catch (error) { semanticIndex = null; }
     state.recall.outcome = outcome;
+    state.recall.semanticIndex = semanticIndex;
     const types = ['', 'THOUGHT', 'EXPERIMENT', 'INVENTION', 'PROJECT'];
     return `<section class="search-hero recall-hero">
         <span class="eyebrow">FIND MY THOUGHT · RECALL V2</span>
@@ -504,7 +587,7 @@
           </div>
         </form>
       </section>
-      <div id="recall-results">${recallResults(outcome)}</div>`;
+      <div id="recall-results">${recallResults(outcome, semanticIndex)}</div>`;
   }
 
   /* ======================= v0.2 · DERIVED CLUSTERS ======================= */
@@ -1166,6 +1249,8 @@
       toast('Derived indexes and clusters recomputed from canonical data.');
       return render();
     }
+    if (action === 'build-semantic-index') return buildSemanticIndex(button);
+    if (action === 'erase-semantic-index') return eraseSemanticIndex();
     if (action === 'reset-learning') {
       if (!window.confirm('Delete every derived query-outcome signal? Your thoughts, connections and history are untouched.')) return;
       await api('/api/recall/learning', { method: 'DELETE' });

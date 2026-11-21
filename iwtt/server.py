@@ -289,6 +289,16 @@ class RequestHandler(BaseHTTPRequestHandler):
         if path == "/api/recall/index":
             self._send_json(200, vault.recall_index_stats())
             return True
+        if path == "/api/recall/embeddings":
+            self._send_json(200, {
+                **vault.recall_embeddings_status(),
+                "boundary": (
+                    "The semantic index is DERIVED and optional. It is built only when you "
+                    "explicitly ask, is erased by 'Delete all derived data', and similarity "
+                    "never enters the scored ranking — it produces a separate labelled section."
+                ),
+            })
+            return True
         if path == "/api/recall/diagnostics":
             self._send_json(200, vault.recall_diagnostics(
                 _qstr(query, "q"), _qstr(query, "thought_id") or None
@@ -698,6 +708,19 @@ class RequestHandler(BaseHTTPRequestHandler):
                 rebuild_clusters=bool(body.get("rebuildClusters", True)),
             ))
             return True
+        if path == "/api/recall/embeddings/build":
+            body = payload if isinstance(payload, dict) else {}
+            limit = body.get("limit")
+            if limit is not None and (not isinstance(limit, int) or limit < 1 or limit > 10_000):
+                raise ValidationError("limit must be a positive integer of at most 10,000")
+            result = vault.recall_embeddings_build(limit=limit)
+            result["boundary"] = (
+                "The semantic index is derived and erasable. The provider received only the "
+                "indexed text of the thoughts it embedded, and the request made no changes to "
+                "any canonical table."
+            )
+            self._send_json(200, result)
+            return True
         if path == "/api/ai/link-check/pair":
             if not isinstance(payload, dict):
                 raise ValidationError("Request body must be an object")
@@ -845,6 +868,16 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "by past feedback until you give some again."
                 )
                 self._send_json(200, result)
+                return
+            if path == "/api/recall/embeddings":
+                erased = self.vault.recall_embeddings_erase()
+                self._send_json(200, {
+                    "erased": erased,
+                    "note": (
+                        "The semantic index was deleted. It is derived data, so nothing "
+                        "canonical changed and it can be rebuilt at any time."
+                    ),
+                })
                 return
             self._send_json(404, {"error": "API route not found"})
         except Exception as exc:

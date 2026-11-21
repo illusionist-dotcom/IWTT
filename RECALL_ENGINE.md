@@ -5,8 +5,9 @@ half-remembered wording, a related thought, a lifecycle state, a connection, a
 time — back to **the exact thought you wrote**.
 
 Everything described here is implemented in `iwtt/recall/`, is deterministic, and
-runs offline against a local SQLite file. There is no embedding model, no vector
-index, no semantic stage, no AI call and no network request anywhere in this path.
+runs offline against a local SQLite file. The scored ranking uses no embedding model,
+no vector index, no AI call and no network request. v0.3 adds an **opt-in semantic
+stage** whose output is deliberately kept outside that ranking (section 12 below).
 Where a technique was adapted from the Graphify research dossier, this document says
 so; the full accounting is in `GRAPHIFY_ADAPTATION_NOTES.md`.
 
@@ -389,12 +390,53 @@ cache is a SQLite table, and `GraphViewModel` is an induced subgraph bounded by
 
 ---
 
+## 12. The opt-in semantic stage (v0.3)
+
+**It never changes the ranking above.** The published 12-signal formula, its
+weights, its lexical-evidence gate and its ambiguity refusal are unchanged. The
+stage attaches a separate `semantic` object to the outcome, rendered under Find
+My Thought as **“Same meaning, different words”**. Its entries are cosine
+similarities between the embedded query and vectors explicitly built from this
+vault; they cannot enter `results`, cannot raise a score, and are shown with a
+percentage that is a ranked hint, not a probability.
+
+* **Off by default.** `DEFAULT_CONFIG.embeddings_enabled` and
+  `semantic_stage_enabled` remain `False`. With no `recall_embeddings` rows,
+  recall is byte-identical to v0.2 and the honesty block says embeddings are OFF.
+* **Built explicitly.** Data & privacy configures a provider (Ollama locally at
+  `http://127.0.0.1:11434/v1`, an OpenAI-compatible endpoint, or the offline
+  mock). `POST /api/recall/embeddings/build` embeds up to a bounded batch of
+  thoughts per call into the derived table; the UI repeats the call until the
+  index is current. With Ollama, an embedding model such as
+  `ollama pull nomic-embed-text` must be present — installed chat models are not
+  embedding models.
+* **Only the query goes over the wire at recall time.** A semantic recall makes
+  exactly one request: the query text to the configured provider's embeddings
+  endpoint. No thought text is sent during search. Builds send the indexed text
+  of the thoughts being embedded, and only when explicitly requested.
+* **Deterministic.** Vectors are stored as float32 in thought-id order; cosine
+  is accumulated in dimension order; neighbours sort by `(-similarity,
+  thought_id)`. Repeating a query returns the identical list. Rows already in
+  the scored results are omitted from the semantic section so the two lists
+  never overlap.
+* **Erasable.** `DELETE /api/recall/embeddings` and “Delete all derived data”
+  remove the table's rows; no canonical data changes. Editing a thought marks
+  its vector stale; switching models marks every vector stale.
+* **References, never invented memories.** Every neighbour is a `thought_id`
+  from the vault; titles and previews are read live from the canonical entry at
+  answer time. A provider that fails to embed degrades the stage to “off” with
+  a reason — it never produces a result.
+
+The scored path's defaults remain `ai_required = False`,
+`network_required = False` and `embeddings_enabled = False`; when the stage runs,
+the honesty block is replaced per query with a truthful account of the model and
+the single request made.
+
 ## 13. What is not implemented
 
-* Embeddings, vector search, semantic reranking, cross-encoder scoring.
-* Any AI or network call in the recall path. `ai_required = False`,
-  `network_required = False`, `embeddings_enabled = False`,
-  `semantic_stage_enabled = False`.
+* Semantic **reranking** of the scored list, cross-encoder scoring, or any use
+  of embeddings in the weighted formula — the stage is supplementary only.
+* Automatic index builds. A provider must be configured and a build requested.
 * Query expansion from external knowledge (see
   `EXTERNAL_KNOWLEDGE_ARCHITECTURE.md`).
 * Learned-to-rank models. Query-outcome memory is a documented, decaying,

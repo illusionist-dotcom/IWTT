@@ -1,6 +1,6 @@
-﻿# IWTT v0.2 â€” Thought Vault Â· Recall & Graph Intelligence
+# IWTT v0.2 — Thought Vault · Recall & Graph Intelligence
 
-**Illusionist World of Thoughts & Tricks (IWTT)** is a local-first memory system for original thoughts, ideas, experiments, inventions, and projects. v0.1 established the durable data foundation; **v0.2 adds the way back to it** â€” deterministic recall from a fragment, a vague phrase, an approximate idea, a related thought, a lifecycle state, a connection or a time context, to the exact thought you wrote. It is still deliberately not the full visual Mind World.
+**Illusionist World of Thoughts & Tricks (IWTT)** is a local-first memory system for original thoughts, ideas, experiments, inventions, and projects. v0.1 established the durable data foundation; **v0.2 adds the way back to it** — deterministic recall from a fragment, a vague phrase, an approximate idea, a related thought, a lifecycle state, a connection or a time context, to the exact thought you wrote. It is still deliberately not the full visual Mind World.
 
 > **Core rule:** the author's original capture is immutable. User edits are versioned. AI output, if explicitly enabled, is stored separately as derived data.
 
@@ -36,22 +36,27 @@ powershell -ExecutionPolicy Bypass -File scripts/build_windows_app.ps1
 
 Run `dist\\IWTT-Thought-Communities.exe`; it opens the app on a free loopback port and keeps the vault in `%LOCALAPPDATA%\\IWTT`. The executable is a local server plus browser UI, not an embedded browser window. The `--data-dir` option can select a different vault folder.
 
+## What is new in v0.3 (provider + semantic stage)
+
+- **Provider-independent AI** — choose Ollama locally (zero cost), any OpenAI-compatible endpoint, or a deterministic offline mock from Data & privacy. The endpoint's model list can be fetched without sending thought text. No API key is required for any completed feature.
+- **Opt-in semantic retrieval** — build an embedding index explicitly, then Find My Thought shows an additional “Same meaning, different words” section. A query about a *clock* can find a thought about a *timer* with no shared words. Every hit is a real thought with a clickable link to the original entry; embeddings never enter the scored ranking, never change its weights, and the index is erasable. See [RECALL_ENGINE.md](RECALL_ENGINE.md) §12.
+
 ## What is new in v0.2
 
-- **FIND MY THOUGHT** â€” one search box that returns ranked candidates with the original text, why each one matched, its connections, and its lifecycle/time context. The text you wrote is rendered visually apart from every derived explanation of it.
-- **Recall Engine V2** â€” twelve deterministic signals (exact phrase, IDF-weighted rare terms, coverage, character trigrams, bounded fuzzy, token overlap, title, tag, graph, temporal, lifecycle, query memory), a published scoring formula, and a theoretical maximum shown next to every score. No embedding model, no semantic stage, no AI call, no network request.
-- **Explicit explanations** â€” 29 fixed codes with human labels and the arithmetic behind each, plus a full per-term breakdown in a secondary diagnostics view.
-- **Ambiguity refusal** â€” when several memories are equally likely IWTT says *"I found three likely memories"* and shows what distinguishes them, instead of picking one. When nothing matches, it says so and explains what that does and does not prove.
-- **Graph Intelligence** â€” bounded neighbourhood expansion, direction-aware traversal, hub suppression, and path finding that will not invent an edge to close a gap. `USER_CONFIRMED` and `AI_SUGGESTED` stay distinct everywhere, and searching never confirms a suggestion.
-- **Derived query memory** â€” IWTT learns which answers were useful, with a documented 180-day half-life, a corroboration gate, and hard clamping so negative feedback demotes but never hides. Inspectable and erasable in one action; never canonical.
-- **Community graph** â€” a clickable, bounded midnight graph with derived community filters and a selected-concept inspector for original text, source, lifecycle, tags, and relationship provenance. Dashed shared-concept links are transient visual hints, never saved relationships.
-- **Capture source labels** â€” `THOUGHT`, `IDEA`, `MESSAGE`, `PROMPT`, `IMPORTED`, and `AI_INTERPRETATION` distinguish what a record came from while its lifecycle remains independently `THOUGHT`, `EXPERIMENT`, `INVENTION`, or `PROJECT`. Source selection is recorded in canonical event history, preserving older SQLite schemas.
-- **In-app AI interpretation** â€” configure an OpenAI-compatible endpoint from Data & privacy, then explicitly request an interpretation. Generated concepts, questions, and next steps stay derived until you review and save an editable draft.
-- **AI link detection** â€” ask IWTT to read a thought and tell you whether it is connected to anything. Candidates come from six structural sources (shared words, stored connections, the same community, a shared tag, the same lifecycle, and a vault-wide sample) rather than shared words alone, so a link that uses different vocabulary can still be found. Also available as an explicit two-thought comparison and a bounded vault sweep. Every verdict is a proposal: it lands as `AI_SUGGESTED`/`SUGGESTED`, is never canonical, and says so.
-- **Local file reading** â€” import plain text, Markdown, CSV, JSON, HTML, notes, and source code into an explicitly marked thought. The selected text becomes the immutable original capture; PDF and Word extraction are not included.
-- **Time and lifecycle recall** â€” `today`, `last week`, `past 3 months`, `recently`, `between X and Y`, `in 2024`, Graveyard inclusion â€” with inferred windows explicitly labelled `ESTIMATED_RANGE` rather than presented as precision IWTT does not have.
-- **External-knowledge foundation** â€” entity kinds, a closed ten-type vocabulary, a separate provenance vocabulary, guards that raise, and a documented cross-domain chain (`Thought â†’ Experiment â†’ Project â†’ Source File â†’ Function â†’ Bug â†’ Fix â†’ New Thought`) whose deferred edges each name their blocker. Interfaces and documentation only: nothing is ingested.
-- **Measured performance** â€” recall p95 118 ms at 1,000 thoughts and 404 ms at 10,000, with the examined candidate set bounded by an absolute cap (73.5% of a 1,000-thought vault, 9.7% of a 10,000-thought one). See [BENCHMARKS.md](BENCHMARKS.md).
+- **FIND MY THOUGHT** — one search box that returns ranked candidates with the original text, why each one matched, its connections, and its lifecycle/time context. The text you wrote is rendered visually apart from every derived explanation of it.
+- **Recall Engine V2** — twelve deterministic signals (exact phrase, IDF-weighted rare terms, coverage, character trigrams, bounded fuzzy, token overlap, title, tag, graph, temporal, lifecycle, query memory), a published scoring formula, and a theoretical maximum shown next to every score. Its scored ranking uses no AI or network request; the v0.3 semantic stage is a separate, opt-in section.
+- **Explicit explanations** — 29 fixed codes with human labels and the arithmetic behind each, plus a full per-term breakdown in a secondary diagnostics view.
+- **Ambiguity refusal** — when several memories are equally likely IWTT says *"I found three likely memories"* and shows what distinguishes them, instead of picking one. When nothing matches, it says so and explains what that does and does not prove.
+- **Graph Intelligence** — bounded neighbourhood expansion, direction-aware traversal, hub suppression, and path finding that will not invent an edge to close a gap. `USER_CONFIRMED` and `AI_SUGGESTED` stay distinct everywhere, and searching never confirms a suggestion.
+- **Derived query memory** — IWTT learns which answers were useful, with a documented 180-day half-life, a corroboration gate, and hard clamping so negative feedback demotes but never hides. Inspectable and erasable in one action; never canonical.
+- **Community graph** — a clickable, bounded midnight graph with derived community filters and a selected-concept inspector for original text, source, lifecycle, tags, and relationship provenance. Dashed shared-concept links are transient visual hints, never saved relationships.
+- **Capture source labels** — `THOUGHT`, `IDEA`, `MESSAGE`, `PROMPT`, `IMPORTED`, and `AI_INTERPRETATION` distinguish what a record came from while its lifecycle remains independently `THOUGHT`, `EXPERIMENT`, `INVENTION`, or `PROJECT`. Source selection is recorded in canonical event history, preserving older SQLite schemas.
+- **In-app AI interpretation** — configure an OpenAI-compatible endpoint from Data & privacy, then explicitly request an interpretation. Generated concepts, questions, and next steps stay derived until you review and save an editable draft.
+- **AI link detection** — ask IWTT to read a thought and tell you whether it is connected to anything. Candidates come from six structural sources (shared words, stored connections, the same community, a shared tag, the same lifecycle, and a vault-wide sample) rather than shared words alone, so a link that uses different vocabulary can still be found. Also available as an explicit two-thought comparison and a bounded vault sweep. Every verdict is a proposal: it lands as `AI_SUGGESTED`/`SUGGESTED`, is never canonical, and says so.
+- **Local file reading** — import plain text, Markdown, CSV, JSON, HTML, notes, and source code into an explicitly marked thought. The selected text becomes the immutable original capture; PDF and Word extraction are not included.
+- **Time and lifecycle recall** — `today`, `last week`, `past 3 months`, `recently`, `between X and Y`, `in 2024`, Graveyard inclusion — with inferred windows explicitly labelled `ESTIMATED_RANGE` rather than presented as precision IWTT does not have.
+- **External-knowledge foundation** — entity kinds, a closed ten-type vocabulary, a separate provenance vocabulary, guards that raise, and a documented cross-domain chain (`Thought → Experiment → Project → Source File → Function → Bug → Fix → New Thought`) whose deferred edges each name their blocker. Interfaces and documentation only: nothing is ingested.
+- **Measured performance** — recall p95 118 ms at 1,000 thoughts and 404 ms at 10,000, with the examined candidate set bounded by an absolute cap (73.5% of a 1,000-thought vault, 9.7% of a 10,000-thought one). See [BENCHMARKS.md](BENCHMARKS.md).
 - **No canonical schema change.** `schema_info.schema_version` is still `1`, the export schema version is still `1`, every v0.1 route and test still behaves identically, and opening a v0.1 vault migrates it in place without rewriting a single canonical row. See [V0.1_TO_V0.2_MIGRATION.md](V0.1_TO_V0.2_MIGRATION.md).
 
 ## What works in v0.1
@@ -87,7 +92,7 @@ Canonical truth lives in SQLite tables for thoughts, revisions, tags, tag assign
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v        # 199 tests
+python -m unittest discover -s tests -v        # 246 tests
 python scripts/verify_release.py               # the v0.1 contract, end to end
 python scripts/verify_release_v02.py           # the v0.2 contract, end to end
 python scripts/benchmark_recall.py --suite     # 1,000 and 10,000 thoughts, measured
@@ -101,19 +106,19 @@ failure; the benchmark script fails if a published performance budget is exceede
 The suite includes a **destructive canonical/derived test**: it creates canonical
 memory, builds every derived artefact, exercises recall and the graph, deletes all of
 it, and proves that thoughts, original text, revisions, events, relationships and
-provenance survive byte-identically â€” then rebuilds and shows recall returning the
+provenance survive byte-identically — then rebuilds and shows recall returning the
 same ranking.
 
 ## Project files
 
-- `iwtt/store.py` â€” SQLite schema, canonical operations, v0.1 search, import/export, backup, demo records, and the v0.2 delegate surface (all v0.2 imports are lazy, inside methods).
-- `iwtt/recall/` â€” the v0.2 recall engine: `config`, `text`, `analysis`, `index`, `scoring`, `filters`, `expansion`, `paths`, `graphview`, `clusters`, `querymemory`, `diagnostics`, `results`, `engine`, `external`.
-- `iwtt/server.py` â€” standard-library HTTP API and static web server (v0.1 routes unchanged, v0.2 routes added).
-- `iwtt/ai.py` â€” no-AI fallback and opt-in OpenAI-compatible provider interface. **Not used by recall.**
-- `web/` â€” self-contained browser interface; no external CSS, JS, fonts, or image dependencies.
-- `tests/` â€” 199 automated tests: store, recall engine, graph intelligence, query memory, determinism, layering boundaries, canonical destruction, v0.1â†’v0.2 migration, the AI link-detection surface, and the browser interface wiring.
-- `scripts/` â€” `verify_release.py`, `verify_release_v02.py`, `benchmark_recall.py`, `build_sample_vault.py`.
-- `research/graphify-acquisition-audit/` â€” the research dossier v0.2 was designed from. Retained unchanged; see [GRAPHIFY_ADAPTATION_NOTES.md](GRAPHIFY_ADAPTATION_NOTES.md).
+- `iwtt/store.py` — SQLite schema, canonical operations, v0.1 search, import/export, backup, demo records, and the v0.2 delegate surface (all v0.2 imports are lazy, inside methods).
+- `iwtt/recall/` — the v0.2 recall engine: `config`, `text`, `analysis`, `index`, `scoring`, `filters`, `expansion`, `paths`, `graphview`, `clusters`, `querymemory`, `diagnostics`, `results`, `engine`, `external`.
+- `iwtt/server.py` — standard-library HTTP API and static web server (v0.1 routes unchanged, v0.2 routes added).
+- `iwtt/ai.py` — no-AI fallback and opt-in OpenAI-compatible provider interface. **Not used by recall.**
+- `web/` — self-contained browser interface; no external CSS, JS, fonts, or image dependencies.
+- `tests/` — 246 automated tests: store, recall engine, graph intelligence, query memory, determinism, layering boundaries, canonical destruction, v0.1→v0.2 migration, the AI link-detection surface, and the browser interface wiring.
+- `scripts/` — `verify_release.py`, `verify_release_v02.py`, `benchmark_recall.py`, `build_sample_vault.py`.
+- `research/graphify-acquisition-audit/` — the research dossier v0.2 was designed from. Retained unchanged; see [GRAPHIFY_ADAPTATION_NOTES.md](GRAPHIFY_ADAPTATION_NOTES.md).
 
 Documentation lives at the **repository root**, not in a `docs/` directory:
 
@@ -127,10 +132,10 @@ Documentation lives at the **repository root**, not in a `docs/` directory:
 | [GRAPHIFY_ADAPTATION_NOTES.md](GRAPHIFY_ADAPTATION_NOTES.md) | Provenance: adapted / independently implemented / rejected, and the license posture |
 | [BENCHMARKS.md](BENCHMARKS.md) | Measured performance at 1,000 and 10,000 thoughts, with method and budgets |
 | [BASELINE_AUDIT.md](BASELINE_AUDIT.md) | Audit of the authoritative v0.1 baseline (Checkpoint 001) |
-| [ARCHITECTURE.md](ARCHITECTURE.md) Â· [DATA_MODEL.md](DATA_MODEL.md) Â· [EVENT_MODEL.md](EVENT_MODEL.md) | System shape, canonical schema, event log |
-| [AI_BOUNDARIES.md](AI_BOUNDARIES.md) Â· [PRIVACY.md](PRIVACY.md) | What AI may and may not do; local-first guarantees |
-| [IMPORT_EXPORT.md](IMPORT_EXPORT.md) Â· [TESTING.md](TESTING.md) | Portability and the test strategy |
-| [SOURCE_FILE_INVENTORY.md](SOURCE_FILE_INVENTORY.md) Â· [FUTURE_MIND_WORLD.md](FUTURE_MIND_WORLD.md) | Every file and its purpose; what v0.2 deliberately does not build |
+| [ARCHITECTURE.md](ARCHITECTURE.md) · [DATA_MODEL.md](DATA_MODEL.md) · [EVENT_MODEL.md](EVENT_MODEL.md) | System shape, canonical schema, event log |
+| [AI_BOUNDARIES.md](AI_BOUNDARIES.md) · [PRIVACY.md](PRIVACY.md) | What AI may and may not do; local-first guarantees |
+| [IMPORT_EXPORT.md](IMPORT_EXPORT.md) · [TESTING.md](TESTING.md) | Portability and the test strategy |
+| [SOURCE_FILE_INVENTORY.md](SOURCE_FILE_INVENTORY.md) · [FUTURE_MIND_WORLD.md](FUTURE_MIND_WORLD.md) | Every file and its purpose; what v0.2 deliberately does not build |
 
 ## Honest limits
 

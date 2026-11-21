@@ -54,6 +54,7 @@ RECALL_PER_THOUGHT_TABLES: tuple[str, ...] = (
     "recall_graph_cache",
     "recall_clusters",
     "recall_query_memory",
+    "recall_embeddings",
 )
 
 #: **Global aggregate** tables hold corpus-wide state that belongs to no single
@@ -147,6 +148,16 @@ CREATE TABLE IF NOT EXISTS recall_query_memory (
 );
 CREATE INDEX IF NOT EXISTS recall_query_memory_query_idx
     ON recall_query_memory(query_norm, thought_id);
+CREATE TABLE IF NOT EXISTS recall_embeddings (
+    thought_id TEXT PRIMARY KEY REFERENCES thoughts(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    dimensions INTEGER NOT NULL,
+    vector BLOB NOT NULL,
+    norm REAL NOT NULL,
+    text_hash TEXT NOT NULL,
+    built_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS recall_embeddings_model_idx ON recall_embeddings(model, dimensions);
 CREATE TABLE IF NOT EXISTS recall_build_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     built_at TEXT NOT NULL,
@@ -1235,6 +1246,7 @@ class RecallIndex:
                     "clusteredNodes": count("SELECT COUNT(*) FROM recall_clusters"),
                     "distinctClusters": count("SELECT COUNT(DISTINCT cluster_id) FROM recall_clusters"),
                     "queryMemoryEvents": count("SELECT COUNT(*) FROM recall_query_memory"),
+                    "embeddingRows": count("SELECT COUNT(*) FROM recall_embeddings"),
                     "queryMemoryQueries": count(
                         "SELECT COUNT(DISTINCT query_norm) FROM recall_query_memory"
                     ),

@@ -17,6 +17,7 @@ relationship only when the user saves it, and even then it lands as
 from __future__ import annotations
 
 import json
+import math
 import os
 import urllib.error
 import urllib.request
@@ -108,6 +109,15 @@ class AIProvider:
 
     def compare_thoughts(self, first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
         """Judge whether exactly two thoughts are linked, in any way."""
+        raise AIUnavailable("No AI provider is configured")
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Embed a batch of texts as fixed-length float vectors.
+
+        Used only by the explicit, opt-in semantic stage.  A provider that
+        cannot embed raises :class:`AIUnavailable`; recall never calls this
+        unless an embedding index has been built.
+        """
         raise AIUnavailable("No AI provider is configured")
 
 
@@ -236,6 +246,58 @@ class MockProvider(AIProvider):
         second_text = f"{second.get('displayTitle') or second.get('title') or ''} {second.get('currentText') or ''}"
         return self._link_verdict(first_text, second_text)
 
+    #: The mock's tiny, published concept lexicon.  Words in the same group
+    #: collapse to one shared dimension, so a thought about a "clock" is
+    #: semantically near one about a "timer" — which is exactly the case the
+    #: semantic stage exists for, and exactly what a bag-of-tokens cannot do.
+    #: The map is fixed in source: the mock's behaviour never changes between
+    #: runs, which is the point of a deterministic provider.
+    _CONCEPT_GROUPS: dict[str, frozenset[str]] = {
+        "scheduling": frozenset({"timer", "schedule", "clock", "reminder", "alarm", "calendar", "deadline"}),
+        "sensing": frozenset({"sensor", "detector", "probe", "gauge", "meter"}),
+        "baking": frozenset({"dough", "bread", "proofing", "bake", "baking", "oven", "yeast", "crumb"}),
+        "grief": frozenset({"grief", "loss", "mourning", "sadness", "ending", "goodbye", "acceptance"}),
+        "autonomy": frozenset({"ai", "agent", "autonomous", "autonomy", "llm", "assistant", "reasoning"}),
+        "memory": frozenset({"memory", "recall", "remember", "forget", "vault", "note", "thought", "idea"}),
+        "conflict": frozenset({"fight", "battle", "combat", "enemy", "enemies", "war", "conflict", "struggle"}),
+        "building": frozenset({"code", "function", "bug", "test", "build", "deploy", "compile", "script"}),
+    }
+    _MOCK_EMBEDDING_DIM = 64
+
+    @classmethod
+    def _concept_token(cls, word: str) -> str | None:
+        for label, group in cls._CONCEPT_GROUPS.items():
+            if word in group:
+                return f"concept:{label}"
+        return None
+
+    def _mock_vector(self, text: str) -> list[float]:
+        import hashlib
+
+        dim = self._MOCK_EMBEDDING_DIM
+        vector = [0.0] * dim
+        for raw in str(text or "").lower().split():
+            word = "".join(char for char in raw if char.isalnum())
+            if len(word) < 3:
+                continue
+            concept = self._concept_token(word)
+            bucket_source = concept or word
+            digest = hashlib.md5(bucket_source.encode("utf-8")).digest()
+            index = digest[0] % dim
+            vector[index] += 1.0
+            if concept:
+                # Concepts are slightly stronger than single words, so two
+                # texts sharing a concept outweigh two sharing a filler word.
+                vector[digest[1] % dim] += 0.5
+        norm = math.sqrt(sum(value * value for value in vector))
+        if norm <= 0.0:
+            return [0.0] * dim
+        return [value / norm for value in vector]
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Deterministic offline vectors over the mock's concept lexicon."""
+        return [self._mock_vector(text) for text in texts]
+
 
 class OpenAICompatibleProvider(AIProvider):
     """Minimal opt-in adapter for a local OpenAI-compatible chat endpoint."""
@@ -331,6 +393,50 @@ class OpenAICompatibleProvider(AIProvider):
         if not models:
             raise RuntimeError("The configured AI endpoint offers no models")
         return sorted(set(models))[:100]
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Embed via the endpoint's OpenAI-compatible ``/v1/embeddings``.
+
+        Supported by Ollama (with an embedding model pulled, e.g.
+        ``nomic-embed-text``), llama.cpp's server, and hosted providers.  The
+        request carries exactly the supplied texts — never anything else.
+        """
+        body = json.dumps({"model": self.model, "input": list(texts)}).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        if self.base_url.endswith("/v1"):
+            url = self.base_url + "/embeddings"
+        elif self.base_url.endswith("/chat/completions"):
+            url = self.base_url.replace("/chat/completions", "/embeddings")
+        else:
+            url = self.base_url + "/v1/embeddings"
+        request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                raw = response.read(MAX_RESPONSE_BYTES + 1)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise RuntimeError(f"The configured AI endpoint did not return embeddings: {exc}") from exc
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise RuntimeError("The configured AI endpoint returned an oversized embeddings response")
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("The configured AI endpoint did not return a valid embeddings response") from exc
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, list) or not data:
+            raise RuntimeError("The configured endpoint returned an unexpected embeddings response")
+        vectors: list[list[float]] = []
+        for item in data:
+            embedding = item.get("embedding") if isinstance(item, dict) else None
+            if not isinstance(embedding, list) or not embedding or any(
+                not isinstance(value, (int, float)) for value in embedding
+            ):
+                raise RuntimeError("The configured endpoint returned an invalid embedding vector")
+            vectors.append([float(value) for value in embedding])
+        if len(vectors) != len(texts):
+            raise RuntimeError("The configured endpoint returned the wrong number of embeddings")
+        return vectors
 
     def summarize(self, thought: dict[str, Any]) -> str:
         system = (

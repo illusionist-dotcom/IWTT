@@ -33,6 +33,7 @@ from . import querymemory
 from .analysis import QueryAnalysis, analyze_query
 from .clusters import cluster_summary
 from .config import DEFAULT_CONFIG, RecallConfig
+from .embeddings import EmbeddingIndex
 from .expansion import expand_neighbourhood, pick_seeds, relationship_context_for
 from .filters import (
     RecallFilters,
@@ -61,8 +62,9 @@ from .text import normalize_text, sanitize_label
 
 HONESTY_STATEMENT = {
     "embeddings": (
-        "NOT IMPLEMENTED. IWTT v0.2 contains no embedding model, no vector index and no "
-        "semantic stage. Retrieval is lexical + fuzzy + graph, and says so."
+        "OFF. No embedding index has been built, so there is no vector stage. Retrieval is "
+        "lexical + fuzzy + graph. An index can be built explicitly against a configured "
+        "provider; until then recall never embeds anything."
     ),
     "semanticUnderstanding": (
         "None claimed. Matches come from tokens, morphology/aliases, character trigrams, "
@@ -74,6 +76,18 @@ HONESTY_STATEMENT = {
         "Scores are deterministic weighted sums, not probabilities. Labels are assigned by "
         "fixed thresholds documented in RECALL_ENGINE.md."
     ),
+}
+
+#: The honesty block when the semantic stage actually ran.  It is applied over
+#: the baseline above, because the two states make different truth claims.
+SEMANTIC_HONESTY = {
+    "embeddings": None,  # filled per query with the model name and count
+    "semanticUnderstanding": (
+        "Semantic neighbours are cosine similarities over embedding vectors built "
+        "explicitly from this vault. They are a separate, labelled section — never "
+        "scored matches — and the provider only ever receives the query text."
+    ),
+    "network": None,     # filled per query: the only request this recall made
 }
 
 
@@ -89,6 +103,10 @@ class RecallEngine:
         self.vault = vault
         self.config = config or DEFAULT_CONFIG
         self.index = index or RecallIndex(vault, self.config)
+        #: The provider consulted by the opt-in semantic stage.  Defaults to
+        #: whatever the vault has configured; callers may override it per
+        #: recall (the HTTP layer does) without changing vault state.
+        self.ai_provider = getattr(vault, "ai_provider", None)
 
     # ------------------------------------------------------------------
     # main entry point
@@ -230,6 +248,7 @@ class RecallEngine:
                     f"That is a statement about these words, not proof the thought is gone — "
                     f"try a different fragment, a related word, or a time/lifecycle filter."
                 )
+            self._attach_semantic_stage(outcome, raw, timings)
             return outcome
 
         # --- 3. load canonical text for the bounded set -----------------
@@ -314,6 +333,7 @@ class RecallEngine:
             outcome.timings_ms = timings
             outcome.index_state = self.index.stats()
             outcome.graph = {"expansion": "skipped — no lexical candidates survived filtering"}
+            self._attach_semantic_stage(outcome, raw, timings)
             return outcome
 
         # --- 4. base scoring pass (cheap, no difflib) -------------------
@@ -635,6 +655,9 @@ class RecallEngine:
         outcome.message = message
         outcome.ambiguity = ambiguity
         timings["ranking"] = (time_module.perf_counter() - mark) * 1000
+        self._attach_semantic_stage(
+            outcome, raw, timings, exclude_ids={result.thought_id for result in ranked}
+        )
 
         outcome.timings_ms = timings
         outcome.timings_ms["total"] = (time_module.perf_counter() - started) * 1000
@@ -686,6 +709,111 @@ class RecallEngine:
     # ------------------------------------------------------------------
     # stage helpers
     # ------------------------------------------------------------------
+
+    def _attach_semantic_stage(
+        self,
+        outcome: RecallOutcome,
+        raw_query: str,
+        timings: dict[str, float],
+        *,
+        exclude_ids: Sequence[str] = (),
+    ) -> None:
+        """The opt-in semantic (embedding) stage.
+
+        Attaches cosine-similarity neighbours of the query to
+        ``outcome.semantic`` as a *separate, labelled section*.  It never
+        touches ``outcome.results``: the scored ranking above stays purely
+        lexical + fuzzy + graph, and the two kinds of evidence are never
+        confused on screen.  With no embedding index, or no provider to embed
+        the query, the stage reports why it is off and recall continues
+        exactly as it would without this module.
+
+        Honesty: when the stage runs, the honesty block states which model
+        produced the vectors and that exactly one request (the query text)
+        left the process — the only network call a recall can ever make.
+        """
+        provider = getattr(self, "ai_provider", None) or getattr(self.vault, "ai_provider", None)
+        index = EmbeddingIndex(self.vault, self.config)
+        mark = time_module.perf_counter()
+        try:
+            status = index.status()
+        except sqlite3.Error:
+            status = {"available": False}
+        if not status.get("available"):
+            outcome.semantic = {
+                "enabled": False,
+                "reason": "No embedding index has been built. Build one from Find My Thought to enable the semantic section.",
+                "results": [],
+            }
+            return
+        if not getattr(provider, "available", False):
+            outcome.semantic = {
+                "enabled": False,
+                "reason": "A semantic index exists, but there is no AI provider configured to embed the query.",
+                "results": [],
+                "indexedCount": status.get("count"),
+                "indexedModel": status.get("model"),
+            }
+            return
+        similar = index.similar(provider, raw_query)
+        timings["semanticStage"] = round(
+            (time_module.perf_counter() - mark) * 1000, 3
+        )
+        if not similar.get("available"):
+            outcome.semantic = {
+                "enabled": False,
+                "reason": similar.get("reason") or "The semantic stage could not run.",
+                "results": [],
+                "indexedCount": status.get("count"),
+                "indexedModel": status.get("model"),
+            }
+            return
+        exclude = set(exclude_ids)
+        entries: list[dict[str, Any]] = []
+        omitted = 0
+        for hit in similar.get("results", []):
+            if hit["thoughtId"] in exclude:
+                omitted += 1
+                continue
+            entries.append(hit)
+        if entries:
+            loaded = load_candidates(self.vault, [entry["thoughtId"] for entry in entries])
+            for entry in entries:
+                candidate = loaded.get(entry["thoughtId"])
+                if candidate is not None:
+                    entry["displayTitle"] = sanitize_label(candidate.display_title, 120)
+                    entry["preview"] = sanitize_label(str(candidate.current_text or ""), 160)
+        outcome.semantic = {
+            "enabled": True,
+            "model": similar.get("model"),
+            "minSimilarity": similar.get("minSimilarity"),
+            "scanned": similar.get("scanned"),
+            "indexedCount": status.get("count"),
+            "indexedModel": status.get("model"),
+            "modelMismatchRows": similar.get("modelMismatchRows"),
+            "omittedAlreadyReturned": omitted,
+            "results": entries,
+        }
+        count = status.get("count")
+        model = similar.get("model")
+        outcome.honesty["embeddings"] = (
+            f"ON. {count} vector(s) were built explicitly from this vault by '{model}'. Cosine "
+            "similarity produced the separate semantic section; it is a ranked hint, not a scored "
+            "match, and it never enters the published formula."
+        )
+        outcome.honesty["semanticUnderstanding"] = (
+            "Semantic neighbours are cosine similarities over explicitly built embedding "
+            "vectors. They are labelled separately from scored matches and name the model "
+            "that produced them."
+        )
+        outcome.honesty["ai"] = (
+            "The semantic stage made one embedding request to the configured provider. "
+            "Scoring itself remained deterministic and offline."
+        )
+        outcome.honesty["network"] = (
+            f"One request left this process: the query text was embedded by '{model}'. No "
+            "thought text was sent, and nothing was written by the request."
+        )
 
     def _analyze(self, query: str, *, now: datetime) -> QueryAnalysis:
         with self.vault._connection() as conn:
@@ -923,7 +1051,7 @@ class RecallEngine:
                 "clear_derived_data()."
             ),
         }
-        payload["honestyStatement"] = HONESTY_STATEMENT
+        payload["honestyStatement"] = outcome.honesty
         payload["results"] = [
             {**result.to_dict(), "rank": result.rank}
             for result in outcome.results

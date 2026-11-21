@@ -287,6 +287,10 @@ class RecallOutcome:
     index_state: dict[str, Any] = field(default_factory=dict)
     honesty: dict[str, Any] = field(default_factory=dict)
     graph: dict[str, Any] = field(default_factory=dict)
+    #: The opt-in semantic (embedding) stage.  Kept strictly separate from
+    #: ``results``: these neighbours are ranked by cosine similarity alone and
+    #: are never mixed into the published, scored ranking above.
+    semantic: dict[str, Any] = field(default_factory=dict)
 
     @property
     def top(self) -> RecallResult | None:
@@ -312,6 +316,7 @@ class RecallOutcome:
             "filters": self.filters,
             "analysis": self.analysis,
             "graph": self.graph,
+            "semantic": self.semantic,
             "timingsMs": {k: round(v, 3) for k, v in self.timings_ms.items()},
             "indexState": self.index_state,
             "honesty": self.honesty,

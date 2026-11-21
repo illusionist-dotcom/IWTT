@@ -1185,6 +1185,7 @@ class Vault:
             "clusters": safe("SELECT COUNT(DISTINCT cluster_id) FROM recall_clusters"),
             "clusteredThoughts": safe("SELECT COUNT(*) FROM recall_clusters"),
             "queryMemoryEvents": safe("SELECT COUNT(*) FROM recall_query_memory"),
+            "embeddingRows": safe("SELECT COUNT(*) FROM recall_embeddings"),
             "builtAt": built_at["value"] if built_at else None,
             "canonical": False,
         }
@@ -2050,18 +2051,27 @@ class Vault:
         explain: bool = True,
         record_opened: bool = False,
         config: Any | None = None,
+        ai_provider: Any | None = None,
     ) -> Any:
         """Recall V2: ranked, deterministic, explainable retrieval.
 
         Returns a ``RecallOutcome`` with ``.results``, ``.state``, ``.message``,
-        ``.graph``, ``.ambiguity``, ``.timings_ms`` and ``.honesty``.
+        ``.graph``, ``.ambiguity``, ``.timings_ms``, ``.honesty`` and the
+        separate ``.semantic`` section.
 
-        ``include_graveyard=False`` narrows to ACTIVE thoughts.  Graveyard
-        thoughts are otherwise *annotated*, never silently dropped: a buried
-        thought is still the user's thought, and hiding it would be a retrieval
-        decision masquerading as a lifecycle one.
+        ``ai_provider`` overrides the vault's configured provider for this one
+        call — used by the HTTP layer so that a session can enable AI without
+        reconfiguring anything else, and by tests that switch providers.  It
+        changes only the opt-in semantic stage; the scored ranking is always
+        computed locally and offline.
         """
-        return self._recall_engine(config).recall(
+        engine = self._recall_engine(config)
+        # Always bind the engine to the currently configured provider, so a
+        # provider swapped after the engine was first created (the HTTP
+        # session and tests both do this) is still seen by the semantic stage.
+        # The scored ranking never reads this attribute.
+        engine.ai_provider = ai_provider if ai_provider is not None else self.ai_provider
+        return engine.recall(
             query,
             limit=limit,
             include_graveyard=include_graveyard,
@@ -2085,9 +2095,16 @@ class Vault:
         include_graveyard: bool | None = None,
         now: datetime | None = None,
         config: Any | None = None,
+        ai_provider: Any | None = None,
     ) -> dict[str, Any]:
         """The FIND MY THOUGHT entry point, returning a JSON-ready payload."""
-        return self._recall_engine(config).find_my_thought(
+        engine = self._recall_engine(config)
+        # Always bind the engine to the currently configured provider, so a
+        # provider swapped after the engine was first created (the HTTP
+        # session and tests both do this) is still seen by the semantic stage.
+        # The scored ranking never reads this attribute.
+        engine.ai_provider = ai_provider if ai_provider is not None else self.ai_provider
+        return engine.find_my_thought(
             query, limit=limit, include_graveyard=include_graveyard, now=now
         )
 
@@ -2150,6 +2167,26 @@ class Vault:
     def recall_config(self) -> dict[str, Any]:
         """Every scoring weight, cap, threshold and boundary, for transparency."""
         return self._recall_engine().config_dict()
+
+    # ------------------------------------------------------------------
+    # v0.3 semantic (embedding) stage — derived, opt-in, never canonical
+    # ------------------------------------------------------------------
+
+    def recall_embeddings_status(self) -> dict[str, Any]:
+        from .recall.embeddings import EmbeddingIndex
+
+        return EmbeddingIndex(self).status()
+
+    def recall_embeddings_build(self, *, limit: int | None = None) -> dict[str, Any]:
+        """Explicit user action; requires the configured AI provider."""
+        from .recall.embeddings import EmbeddingIndex
+
+        return EmbeddingIndex(self).build(self.ai_provider, limit=limit)
+
+    def recall_embeddings_erase(self) -> int:
+        from .recall.embeddings import EmbeddingIndex
+
+        return EmbeddingIndex(self).erase()
 
     def find_path(self, source_id: str, target_id: str, *, directed: bool = True) -> dict[str, Any]:
         from .recall.paths import PathResult

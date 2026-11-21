@@ -489,6 +489,16 @@ kbd { font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; color: #a5b7aa;
 .recall-banner.none { background: #f6f0eb; border-color: #e6d8cc; color: #6d5343; }
 
 .panel.honesty-panel, .panel.explorer-panel, .panel.breakdown-panel { margin-top: 18px; }
+/* v0.3 — the opt-in semantic section. Deliberately visually distinct from
+   scored matches so the two kinds of evidence are never confused. */
+.panel.semantic-panel { margin-top: 18px; border-left: 3px solid #8a9c7e; }
+.panel.semantic-panel.semantic-off { border-left-color: #c9c3b4; }
+.semantic-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 7px; }
+.semantic-hit { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; background: #f8f9f5; border: 1px solid var(--line); border-radius: 9px; }
+.semantic-score { flex: none; min-width: 40px; text-align: center; font: 700 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: #3f5b46; background: #e7ece1; border-radius: 6px; padding: 2px 4px; }
+.semantic-body { display: grid; gap: 2px; min-width: 0; }
+.semantic-body small { font-size: 10.5px; line-height: 1.5; color: #5c675c; }
+
 .honesty-list { margin: 8px 0 0; padding-left: 17px; display: grid; gap: 6px; }
 .honesty-list li { font-size: 11px; line-height: 1.6; color: #4c5a4e; }
 .honesty-list strong { color: #33513a; }

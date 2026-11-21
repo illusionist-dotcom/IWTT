@@ -35,8 +35,8 @@ from typing import Any
 #: Bumped whenever the *generator* of derived data changes, so stale derived
 #: rows are invalidated by version and not only by input change (matrix #27:
 #: "derived data must be invalidated when the generator changes").
-RECALL_INDEX_SCHEMA = 3
-RECALL_GENERATOR_VERSION = "0.2.0"
+RECALL_INDEX_SCHEMA = 4
+RECALL_GENERATOR_VERSION = "0.3.0"
 
 
 @dataclass(frozen=True)
@@ -199,6 +199,22 @@ class RecallConfig:
     semantic_stage_enabled: bool = False
     ai_required: bool = False
     network_required: bool = False
+
+    # --- semantic (embedding) stage: opt-in, derived, never a scored signal ---
+    #: Embedding similarity does NOT enter the published scoring formula.  It
+    #: drives a separate, explicitly labelled result section ("same meaning,
+    #: different words") whose entries are ranked by cosine similarity alone
+    #: and always shown with the model that produced them.  The stage is off
+    #: until the user explicitly builds an embedding index against a
+    #: configured provider; with no index, recall is byte-identical to a
+    #: purely lexical+fuzzy+graph run.
+    embedding_results: int = 8            # max entries in the semantic section
+    embedding_min_similarity: float = 0.35
+    embedding_scan_cap: int = 5000        # deterministic bound on the per-query scan
+    embedding_text_char_cap: int = 4000   # text embedded per thought (build side)
+    embedding_query_char_cap: int = 1000  # text embedded for the query side
+    embedding_batch_size: int = 16        # texts per provider request during a build
+    embedding_build_limit: int = 200      # thoughts updated per explicit build call
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)

@@ -57,12 +57,14 @@ Thought creation events also record the user's `captureKind` (`THOUGHT`, `IDEA`,
 
 The artifact types are `AI_SUMMARY`, `AI_INTERPRETATION` and `AI_LINK_ANALYSIS`. Each one records the *action*, never the meaning of a thought: an `AI_LINK_ANALYSIS` payload holds the candidate count, where the candidates came from, and the provider's proposed links with their reasons. It holds no canonical text and creates no relationship — a link becomes canonical only when the user saves it, and then only as an unconfirmed `AI_SUGGESTED` proposal. The canonical event that accompanies an artifact (`AI_SUMMARY_GENERATED`, `AI_INTERPRETATION_GENERATED`, `AI_LINK_ANALYSIS_GENERATED`) records that the action happened; deleting the artifact does not erase the event.
 
-### v0.2 derived tables (`recall_*`, index schema version 3)
+### v0.2/v0.3 derived tables (`recall_*`, index schema version 4)
 
-All nine are derived, rebuildable from canonical records, erased by
+All ten are derived, rebuildable from canonical records, erased by
 `clear_derived_data()` / `delete_all_derived_intelligence()`, and excluded from the
 default canonical export. None stores canonical truth; `recall_docs` stores counts and
-timestamps only, never verbatim thought text.
+timestamps only, never verbatim thought text. Schema version 4 adds one optional
+table, `recall_embeddings`; it changes no canonical byte and no existing derived
+table.
 
 **Per-thought (all `REFERENCES thoughts(id) ON DELETE CASCADE`)**
 
@@ -72,6 +74,7 @@ timestamps only, never verbatim thought text.
 - `recall_graph_cache(thought_id PK, degree, in_degree, out_degree, hub_factor, …)` — derived degrees and hub factors, so no public entry point has to count edges on read.
 - `recall_clusters(thought_id, cluster_id, cluster_size, label, algorithm, authority, member_fingerprint)` — `algorithm = "components+labelprop"`, `authority = AUTOMATICALLY_DISCOVERED_CLUSTER`. Member titles are read live from `thoughts`, never stored here.
 - `recall_query_memory(id PK, query_norm, thought_id, feedback ∈ {USEFUL, NOT_USEFUL, OPENED, CORRECTION}, weight, rank_at_time, score_at_time, note, created_at)` — indexed on `(query_norm, thought_id)`. See [QUERY_MEMORY.md](QUERY_MEMORY.md).
+- `recall_embeddings(thought_id PK/FK, model, dimensions, vector BLOB, norm, text_hash, built_at)` — v0.3. float32 vectors produced by an explicitly configured provider from indexed thought text. It stores **no thought text**: only numbers, a SHA-256 hash of the source text, and a provider label. Absent by default; built only on request; erased with all other derived data. A row is stale (and rebuilt) when the text hash or model name changes.
 
 **Corpus-wide (no `thought_id` foreign key, by design)**
 
