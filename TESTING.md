@@ -8,7 +8,7 @@ tests decode UTF-8 explicitly rather than relying on the host ANSI code page. Wi
 11 performance measurements are recorded separately in `BENCHMARKS.md`.
 
 ```bash
-python -m unittest discover -s tests -v        # gate 1 — 287 tests
+python -m unittest discover -s tests -v        # gate 1 — 299 tests
 python scripts/verify_release.py               # gate 2 — the v0.1 contract
 python scripts/verify_release_v02.py           # gate 3 — the v0.2 contract
 python scripts/benchmark_recall.py --suite     # gate 4 — measured performance
@@ -23,7 +23,7 @@ git status --short        # nothing unintended is about to be committed
 
 ---
 
-## Gate 1 — Automated tests (287)
+## Gate 1 — Automated tests (299)
 
 Tests use temporary directories and temporary SQLite databases; they never touch the
 user's vault.
@@ -41,6 +41,7 @@ user's vault.
 | `test_semantic.py` | 47 | Opt-in embedding index, build/status/erase routes, separate semantic section, stale-vector detection and provider failures |
 | `test_reasoning.py` | 29 | All six reasoning modes without a provider, similarity ranking, connection discovery, themes, tensions, chronology, citations, canonical immutability, invalid provider responses and the save/approval workflow |
 | `test_thinking_partner.py` | 12 | Dedicated nav view, seven human questions mapped to closed modes, suggested prompts, memory selection, clickable citations, explicit uncertainty, follow-up context, hand-offs from Recall/detail/Connections, and no automatic canonical writes |
+| `test_phase8_acceptance.py` | 12 | The twelve Phase 8 acceptance categories end to end: semantic retrieval, similarity ranking, connection discovery, cross-memory reasoning, contradiction detection, historical retrieval, provider switching, missing credentials, invalid provider responses, original-memory preservation, permission enforcement and approval workflow |
 | `test_canonical_destruction.py` | 3 | **The mandatory destructive verification** (below) |
 | `test_migration_v01_to_v02.py` | 7 | Migration from a genuine v0.1-format file (below) |
 | `test_web_interface.py` | 14 | Static button/form/route wiring, explicit rendering for every artifact type, and Node execution of the artifact renderer |
@@ -218,6 +219,46 @@ artifact was falling through to `JSON.stringify(payload)` and reaching the
 screen as a raw JSON blob. The renderer now handles each type by name, and an
 unrecognised future type is rendered as a readable key/value list rather than
 machine output. The Node checks skip cleanly when Node is not installed.
+
+### Phase 8 acceptance gate
+
+`test_phase8_acceptance.py` is the consolidated acceptance gate for the AI
+thinking-partner enhancement. It runs the real `Vault`, recall engine,
+`ReasoningEngine` and HTTP routes; only the optional AI provider is stubbed.
+Twelve named tests map one-to-one to the required capabilities:
+
+1. **semantic retrieval** — a `clock` query reaches a `timer` memory with zero
+   lexical overlap, after an explicitly built derived index, and every hit is a
+   real thought;
+2. **similarity ranking** — findings are score-ordered, exclude the source and
+   cite their original;
+3. **connection discovery** — proposals are `SUGGESTED`, need approval and
+   write no relationship;
+4. **cross-memory reasoning** — themes span separate captures and explanations
+   cite only real memories;
+5. **contradiction detection** — the `always`/`never` pair is found with both
+   originals cited and a visible uncertainty caveat;
+6. **historical retrieval** — evolution returns originals, revisions and events
+   in chronological order;
+7. **provider switching** — a provider view appears, leaves the baseline
+   findings unchanged, and disappears when the provider is removed;
+8. **missing credentials** — no provider or key is an error-free, deterministic
+   baseline with no provider view;
+9. **invalid provider responses** — invented ids and malformed verdicts are
+   filtered, and a failing provider degrades with a warning;
+10. **original-memory preservation** — canonical bytes and schema version `1`
+    survive every mode, an embedding build, derived erasure and provider use;
+11. **permission enforcement** — hosted non-loopback provider URLs are rejected
+    before any request, the server binds only to loopback, and malformed writes
+    are validation errors;
+12. **approval workflow** — a saved proposal stays `SUGGESTED` with
+    `AI_SUGGESTED` provenance and is confirmed only by an explicit user action.
+
+Run it alone with:
+
+```bash
+python -m unittest discover -s tests -p "test_phase8_acceptance.py" -v
+```
 
 ---
 
