@@ -55,7 +55,25 @@ Thought creation events also record the user's `captureKind` (`THOUGHT`, `IDEA`,
 - `search_documents`: one disposable text projection per thought, containing original/current text, title, and tags. It is not canonical and has no authority to rewrite its source.
 - `derived_artifacts`: optional AI output. Each record has UUID, thought ID, artifact type, payload JSON, source thought IDs, provider, model, and generation timestamp. It is excluded from default canonical export and can be deleted independently.
 
-The artifact types are `AI_SUMMARY`, `AI_INTERPRETATION` and `AI_LINK_ANALYSIS`. Each one records the *action*, never the meaning of a thought: an `AI_LINK_ANALYSIS` payload holds the candidate count, where the candidates came from, and the provider's proposed links with their reasons. It holds no canonical text and creates no relationship — a link becomes canonical only when the user saves it, and then only as an unconfirmed `AI_SUGGESTED` proposal. The canonical event that accompanies an artifact (`AI_SUMMARY_GENERATED`, `AI_INTERPRETATION_GENERATED`, `AI_LINK_ANALYSIS_GENERATED`) records that the action happened; deleting the artifact does not erase the event.
+The artifact types are `AI_SUMMARY`, `AI_INTERPRETATION`, `AI_LINK_ANALYSIS`,
+and the six v0.3 Thinking Partner findings: `AI_SIMILARITY_ANALYSIS`,
+`AI_CONNECTION_DISCOVERY`, `AI_THEME_ANALYSIS`, `AI_CONTRADICTION_REVIEW`,
+`AI_EVOLUTION_REVIEW` and `AI_CONTEXT_EXPLANATION`. Each one records the *action*,
+never the meaning of a thought. An `AI_LINK_ANALYSIS` payload holds candidate
+counts, where candidates came from and proposed links with reasons; a reasoning
+payload holds derived findings, bounded citations, `citedThoughtIds`, any
+provider view, warnings and the stated boundary. It holds no canonical text and
+creates no relationship — a link becomes canonical only when the user saves it,
+and then only as an unconfirmed `AI_SUGGESTED` proposal. A connection discovery
+finding likewise carries `status: SUGGESTED` and `requiresApproval: true` and is
+written to `derived_artifacts` only when the user explicitly saves it. No new
+table is added for reasoning. The canonical event that accompanies an artifact
+(`AI_SUMMARY_GENERATED`, `AI_INTERPRETATION_GENERATED`,
+`AI_LINK_ANALYSIS_GENERATED`, `AI_SIMILARITY_GENERATED`,
+`AI_CONNECTION_DISCOVERY_GENERATED`, `AI_THEME_ANALYSIS_GENERATED`,
+`AI_CONTRADICTION_REVIEW_GENERATED`, `AI_EVOLUTION_REVIEW_GENERATED`,
+`AI_CONTEXT_EXPLANATION_GENERATED`) records only that the action happened;
+deleting the artifact does not erase the event.
 
 ### v0.2/v0.3 derived tables (`recall_*`, index schema version 4)
 

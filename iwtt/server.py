@@ -28,6 +28,12 @@ from .ai import (
     provider_from_environment,
     validate_endpoint,
 )
+from .recall.reasoning import (
+    AUTHORITY as REASONING_AUTHORITY,
+    MODES as REASONING_MODES,
+    REASONING_ARTIFACT_TYPES,
+    ReasoningEngine,
+)
 from .store import APP_VERSION, ConflictError, RELATIONSHIP_TYPES, ValidationError, Vault
 
 # PyInstaller one-file builds extract bundled files under ``_MEIPASS``.
@@ -349,6 +355,22 @@ class RequestHandler(BaseHTTPRequestHandler):
             return True
         if path == "/api/external/foundation":
             self._send_json(200, vault.external_foundation())
+            return True
+        if path == "/api/reasoning":
+            provider = vault.ai_provider
+            self._send_json(200, {
+                "modes": list(REASONING_MODES),
+                "artifactTypes": REASONING_ARTIFACT_TYPES,
+                "authority": REASONING_AUTHORITY,
+                "provider": provider.name,
+                "model": getattr(provider, "model", None),
+                "providerAvailable": bool(getattr(provider, "available", False)),
+                "boundary": (
+                    "Cross-memory reasoning is a derived reading of your own captures. It works "
+                    "without an AI provider, never invents a memory, never edits or deletes an "
+                    "original, and never writes a relationship without your explicit save."
+                ),
+            })
             return True
         neighbourhood_match = re.fullmatch(r"/api/graph/neighbourhood/([^/]+)", path)
         if neighbourhood_match:
@@ -817,6 +839,58 @@ class RequestHandler(BaseHTTPRequestHandler):
                     f"This sweep made {len(sweep)} provider request(s) and examined "
                     f"{examined} candidate pairs. Every proposal is AI_SUGGESTED and "
                     "unconfirmed until you save and review it."
+                ),
+            })
+            return True
+        if path == "/api/reasoning":
+            if not isinstance(payload, dict):
+                raise ValidationError("Request body must be an object")
+            mode = str(payload.get("mode") or "")
+            if mode not in REASONING_MODES:
+                raise ValidationError(f"Unknown reasoning mode: {mode}")
+            selected = payload.get("thoughtIds")
+            if selected is not None and not isinstance(selected, list):
+                raise ValidationError("thoughtIds must be an array")
+            result = ReasoningEngine(vault, vault.ai_provider).run(
+                mode,
+                thought_id=payload.get("thoughtId"),
+                query=payload.get("query"),
+                limit=payload.get("limit", 8),
+                thought_ids=selected,
+                include_graveyard=payload.get("includeGraveyard", False),
+                use_provider=payload.get("useProvider", True),
+            )
+            self._send_json(200, result)
+            return True
+        if path == "/api/reasoning/save":
+            if not isinstance(payload, dict):
+                raise ValidationError("Request body must be an object")
+            mode = str(payload.get("mode") or "")
+            if mode not in REASONING_ARTIFACT_TYPES:
+                raise ValidationError(f"Unknown reasoning mode: {mode}")
+            finding = payload.get("finding")
+            if not isinstance(finding, dict):
+                raise ValidationError("finding must be the object returned by /api/reasoning")
+            cited = finding.get("citedThoughtIds")
+            cited = [str(item) for item in cited] if isinstance(cited, list) else []
+            primary = str(finding.get("primaryThoughtId") or (cited[0] if cited else "") or "")
+            if not primary:
+                raise ValidationError("There is no original thought to attach this finding to")
+            provider = vault.ai_provider
+            artifact = vault.save_derived_artifact(
+                primary,
+                REASONING_ARTIFACT_TYPES[mode],
+                finding,
+                provider.name,
+                getattr(provider, "model", None),
+                cited or [primary],
+            )
+            self._send_json(201, {
+                "artifact": artifact,
+                "canonical": False,
+                "note": (
+                    "Saved as a derived artifact. You can delete it with all derived data at any "
+                    "time. It never changes an original capture or confirms a relationship."
                 ),
             })
             return True

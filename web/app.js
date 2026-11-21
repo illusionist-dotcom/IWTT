@@ -793,6 +793,12 @@
       AI_SUMMARY_GENERATED: 'AI summary generated · derived data',
       AI_INTERPRETATION_GENERATED: 'AI interpretation generated · derived data',
       AI_LINK_ANALYSIS_GENERATED: 'AI link analysis generated · derived data',
+      AI_SIMILARITY_GENERATED: 'Similarity analysis saved · derived data',
+      AI_CONNECTION_DISCOVERY_GENERATED: 'Connection discovery saved · derived data',
+      AI_THEME_ANALYSIS_GENERATED: 'Theme analysis saved · derived data',
+      AI_CONTRADICTION_REVIEW_GENERATED: 'Contradiction review saved · derived data',
+      AI_EVOLUTION_REVIEW_GENERATED: 'Evolution review saved · derived data',
+      AI_CONTEXT_EXPLANATION_GENERATED: 'Contextual explanation saved · derived data',
     };
     return labels[event.eventType] || String(event.eventType || 'Event').replaceAll('_', ' ').toLowerCase();
   }
@@ -824,6 +830,15 @@
       return head + '<p class="derived-summary">' + (payload.linkedCount || 0) + ' possible link' + (payload.linkedCount === 1 ? '' : 's') + ' among ' + (payload.examinedCount || 0) + ' candidates read</p>' + sourceBreakdown + rows + '<p class="revision-note">' + esc(payload.boundary || 'A screening result, not proof.') + '</p>' + meta;
     }
 
+    if (Object.keys(REASONING_ARTIFACT_LABELS).includes(type)) {
+      const providerView = payload.providerView;
+      return head + '<p class="derived-summary">' + esc((payload.summary || payload.note || '')) + '</p>' +
+        renderReasoningFindings(payload) +
+        (providerView ? '<div class="reasoning-provider-view"><span class="derived-mark">Provider interpretation · proposal only</span><p>' + esc(providerView.summary || '') + '</p>' + reasoningReferences(providerView) + '</div>' : '') +
+        (payload.warnings?.length ? '<p class="revision-note">' + esc(payload.warnings.join(' ')) + '</p>' : '') +
+        '<p class="revision-note">' + esc(REASONING_ARTIFACT_LABELS[type]) + ' · derived, erasable, and never a change to your original words.</p>' + meta;
+    }
+
     if (type === 'AI_INTERPRETATION') {
       const columns = [['Concepts', payload.concepts], ['Open questions', payload.openQuestions], ['Possible next steps', payload.possibleNextSteps]]
         .map(([label, items]) => items?.length ? '<section><strong>' + esc(label) + '</strong><ul>' + items.map(item => '<li>' + esc(item) + '</li>').join('') + '</ul></section>' : '')
@@ -842,6 +857,51 @@
       ? Object.entries(payload).map(([key, value]) => '<div class="revision-note"><strong>' + esc(key) + '</strong>: ' + esc(readableValue(value)) + '</div>').join('')
       : '<p class="revision-note">This derived artifact has no readable content.</p>';
     return head + fallback + meta;
+  }
+
+  // Kept inside the renderer block so the artifact renderer stays self-contained
+  // for the static UI tests and for any future derived view that reuses it.
+  const REASONING_ARTIFACT_LABELS = {
+    'AI_SIMILARITY_ANALYSIS': 'Similar thoughts',
+    'AI_CONNECTION_DISCOVERY': 'Possible connections',
+    'AI_THEME_ANALYSIS': 'Recurring themes',
+    'AI_CONTRADICTION_REVIEW': 'Possible tensions',
+    'AI_EVOLUTION_REVIEW': 'Thinking evolution',
+    'AI_CONTEXT_EXPLANATION': 'Contextual explanation',
+  };
+
+  function reasoningReferences(item) {
+    const refs = [item.citation, item.source, item.target, item.left, item.right].filter(Boolean);
+    if (!refs.length && Array.isArray(item.evidence)) refs.push(...item.evidence.slice(0, 4));
+    if (!refs.length && Array.isArray(item.thoughtIds)) {
+      refs.push(...item.thoughtIds.map(id => ({ thoughtId: id, title: id, excerpt: '' })));
+    }
+    if (!refs.length) return '';
+    const unique = new Map();
+    refs.forEach(ref => { if (ref?.thoughtId && !unique.has(ref.thoughtId)) unique.set(ref.thoughtId, ref); });
+    return '<div class="reasoning-refs">' + [...unique.values()].slice(0, 4).map(ref =>
+      '<button class="reasoning-ref" type="button" data-open-thought="' + attr(ref.thoughtId) + '">' +
+      '<strong>' + esc(ref.title || 'Original thought') + '</strong>' +
+      (ref.excerpt ? '<small>' + esc(String(ref.excerpt).slice(0, 120)) + '</small>' : '') +
+      '</button>').join('') + '</div>';
+  }
+
+  function renderReasoningFindings(payload, limit = 8) {
+    const findings = Array.isArray(payload.findings) ? payload.findings : [];
+    if (!findings.length) return '<p class="revision-note">' + esc(payload.note || 'No findings were recorded.') + '</p>';
+    return '<div class="reasoning-findings">' + findings.slice(0, limit).map(item => {
+      const title = item.title || item.label || item.observation ||
+        (item.kind ? String(item.kind).replaceAll('_', ' ') : 'Finding');
+      const detail = item.reason || item.observation || item.caveat || item.note ||
+        (Array.isArray(item.sharedTerms) ? item.sharedTerms.join(' · ') : '');
+      const score = item.score !== undefined ? ' · ' + Math.round(item.score * 100) + '% match'
+        : item.similarity !== undefined ? ' · ' + Math.round(item.similarity * 100) + '% semantic'
+        : item.strength !== undefined ? ' · strength ' + Math.round(item.strength * 100) + '%' : '';
+      return '<article class="reasoning-finding"><strong>' + esc(title) + '</strong>' +
+        (score ? '<span class="reasoning-score">' + esc(score) + '</span>' : '') +
+        (detail ? '<p>' + esc(detail) + '</p>' : '') +
+        reasoningReferences(item) + '</article>';
+    }).join('') + '</div>';
   }
 
   function readableValue(value) {

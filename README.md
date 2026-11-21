@@ -36,10 +36,11 @@ powershell -ExecutionPolicy Bypass -File scripts/build_windows_app.ps1
 
 Run `dist\\IWTT-Thought-Communities.exe`; it opens the app on a free loopback port and keeps the vault in `%LOCALAPPDATA%\\IWTT`. The executable is a local server plus browser UI, not an embedded browser window. The `--data-dir` option can select a different vault folder.
 
-## What is new in v0.3 (provider + semantic stage)
+## What is new in v0.3 (provider, semantic stage and cross-memory reasoning)
 
 - **Provider-independent AI** — choose Ollama locally (zero cost), any OpenAI-compatible endpoint, or a deterministic offline mock from Data & privacy. The endpoint's model list can be fetched without sending thought text. No API key is required for any completed feature.
 - **Opt-in semantic retrieval** — build an embedding index explicitly, then Find My Thought shows an additional “Same meaning, different words” section. A query about a *clock* can find a thought about a *timer* with no shared words. Every hit is a real thought with a clickable link to the original entry; embeddings never enter the scored ranking, never change its weights, and the index is erasable. See [RECALL_ENGINE.md](RECALL_ENGINE.md) §12.
+- **Cross-memory reasoning engine** — six bounded modes (`similar`, `connections`, `themes`, `contradictions`, `evolution`, `explain`) compare your own captures and return cited, explicitly derived findings. The deterministic baseline works with no provider; a configured provider may add a labelled proposal but cannot invent a memory or write a relationship. Findings are saved only when you ask, into erasable derived artifacts. See [RECALL_ENGINE.md](RECALL_ENGINE.md) §13.
 
 ## What is new in v0.2
 
@@ -92,7 +93,7 @@ Canonical truth lives in SQLite tables for thoughts, revisions, tags, tag assign
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v        # 246 tests
+python -m unittest discover -s tests -v        # 275 tests
 python scripts/verify_release.py               # the v0.1 contract, end to end
 python scripts/verify_release_v02.py           # the v0.2 contract, end to end
 python scripts/benchmark_recall.py --suite     # 1,000 and 10,000 thoughts, measured
@@ -112,11 +113,11 @@ same ranking.
 ## Project files
 
 - `iwtt/store.py` — SQLite schema, canonical operations, v0.1 search, import/export, backup, demo records, and the v0.2 delegate surface (all v0.2 imports are lazy, inside methods).
-- `iwtt/recall/` — the v0.2 recall engine: `config`, `text`, `analysis`, `index`, `scoring`, `filters`, `expansion`, `paths`, `graphview`, `clusters`, `querymemory`, `diagnostics`, `results`, `engine`, `external`.
-- `iwtt/server.py` — standard-library HTTP API and static web server (v0.1 routes unchanged, v0.2 routes added).
-- `iwtt/ai.py` — no-AI fallback and opt-in OpenAI-compatible provider interface. **Not used by recall.**
+- `iwtt/recall/` — the v0.2 recall engine plus v0.3 `embeddings` and `reasoning`: `config`, `text`, `analysis`, `index`, `scoring`, `filters`, `expansion`, `paths`, `graphview`, `clusters`, `querymemory`, `diagnostics`, `results`, `engine`, `external`.
+- `iwtt/server.py` — standard-library HTTP API and static web server (v0.1 routes unchanged; v0.2/v0.3 routes added).
+- `iwtt/ai.py` — no-AI fallback and opt-in provider interface (MockProvider, Ollama preset, OpenAI-compatible adapter, embeddings). **Not used by the scored recall path.**
 - `web/` — self-contained browser interface; no external CSS, JS, fonts, or image dependencies.
-- `tests/` — 246 automated tests: store, recall engine, graph intelligence, query memory, determinism, layering boundaries, canonical destruction, v0.1→v0.2 migration, the AI link-detection surface, and the browser interface wiring.
+- `tests/` — 275 automated tests: store, recall engine, graph intelligence, query memory, determinism, layering boundaries, canonical destruction, v0.1→v0.2 migration, providers, semantic retrieval, cross-memory reasoning, the AI link-detection surface, and the browser interface wiring.
 - `scripts/` — `verify_release.py`, `verify_release_v02.py`, `benchmark_recall.py`, `build_sample_vault.py`.
 - `research/graphify-acquisition-audit/` — the research dossier v0.2 was designed from. Retained unchanged; see [GRAPHIFY_ADAPTATION_NOTES.md](GRAPHIFY_ADAPTATION_NOTES.md).
 
@@ -143,12 +144,13 @@ Documentation lives at the **repository root**, not in a `docs/` directory:
 
 **Still true in v0.2, and said out loud by the software itself:**
 
-- **No embeddings and no semantic model.** Recall is lexical + fuzzy + graph. Every outcome carries an `honesty` block stating this in plain language, so the claim cannot be inferred only from documentation.
-- **No AI and no network in the recall path.** `ai_required`, `network_required`, `embeddings_enabled` and `semantic_stage_enabled` are all `False`, and the No-AI default is unchanged.
+- **The scored ranking has no embeddings and no semantic model.** It is lexical + fuzzy + graph, and every outcome carries an `honesty` block stating this in plain language. v0.3's “Same meaning, different words” section is opt-in and separate; it cannot change the ranking.
+- **No AI and no network in the scored recall path.** `ai_required`, `network_required`, `embeddings_enabled` and `semantic_stage_enabled` are all `False`, and the No-AI default is unchanged. Explicit AI, embedding and reasoning actions are separate user requests.
 - **Scores are deterministic weighted sums, not probabilities.** A 13.75 out of a possible 21.25 is not "65% confident".
 - **Relationship edges enrich candidates; they never replace lexical evidence.** A thought with no word in common with your query cannot become a strong match by association.
 - **AI link detection is a screening result, not proof.** A model reading two thoughts can miss a real connection and can propose one that does not exist. IWTT shows you its reasoning, records how many candidates it read and where they came from, and refuses to let a verdict become canonical on its own. The candidate pool is capped at 16, so a link to a thought outside that pool will not be found.
 - **No external-entity ingestion.** Local text/source files can be captured as clearly tagged imported thoughts. This build does not create repository/file/function entities, parse ASTs, or extract PDF/Word content.
 - **Clustering is automatic and derived**, labelled `AUTOMATICALLY_DISCOVERED_CLUSTER`, and never canonical truth.
+- **Cross-memory reasoning is advisory.** Themes, tensions and explanations are derived readings of your own captures, not facts about your intent. A provider error degrades to the local baseline with a warning, and no finding can edit a memory or confirm a relationship without your explicit action.
 
 See each architecture and privacy document for more.

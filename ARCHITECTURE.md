@@ -4,7 +4,7 @@
 
 IWTT is a small local web application backed by SQLite. Python's standard library provides the HTTP server, SQLite binding, JSON handling, UUIDs, ZIP/backup primitives, and fuzzy string comparison. The browser UI is a same-origin HTML/CSS/JavaScript single-page experience. There is no remote database or required third-party runtime — **v0.2 adds no dependency**.
 
-v0.1 established the durable canonical foundation. v0.2 adds a **derived recall and graph-intelligence layer** beside it: `iwtt/recall/` (8,416 lines across 16 modules) plus nine `recall_*` tables. The canonical schema is unchanged, `schema_info.schema_version` is still `1`, and every v0.1 route, test and behaviour is intact.
+v0.1 established the durable canonical foundation. v0.2 adds a **derived recall and graph-intelligence layer** beside it: `iwtt/recall/` plus ten `recall_*` tables. v0.3 adds the opt-in embedding index and the cross-memory reasoning module inside that same derived layer. The canonical schema is unchanged, `schema_info.schema_version` is still `1`, and every v0.1 route, test and behaviour is intact.
 
 ```text
 Browser (web/)
@@ -17,10 +17,11 @@ iwtt/server.py  ── route validation, HTTP responses, static assets
 iwtt/store.py  ── canonical operations + SQLite transactions
     ├── canonical: thoughts, revisions, tags, thought_tags, relationships, events
     ├── derived (v0.1): search_documents, derived_artifacts
-    └── derived (v0.2): iwtt/recall/ ── engine, index, scoring, expansion,
+    └── derived (v0.2/v0.3): iwtt/recall/ ── engine, index, scoring, expansion,
                         paths, graphview, clusters, querymemory, diagnostics,
-                        filters, analysis, text, results, config, external
-                        └── recall_* tables (9)
+                        filters, analysis, text, results, config, external,
+                        embeddings (v0.3), reasoning (v0.3)
+                        └── recall_* tables (10)
     ▼
 ~/.iwtt/thought-vault.sqlite3 (overridable with IWTT_DATA_DIR)
 ```
@@ -74,10 +75,23 @@ Markdown is a readable snapshot, not the reconstruction format. SQLite backup us
 
 `iwtt/ai.py` exposes an AI provider interface and `NoAIProvider`. No endpoint is used unless `IWTT_AI_BASE_URL` is explicitly configured. A user action is still required before a thought is sent. The optional implementation supports an OpenAI-compatible chat-completions endpoint; it can point at a local service. See [AI_BOUNDARIES.md](AI_BOUNDARIES.md).
 
-**Recall makes no AI call and no network request, ever.** `embeddings_enabled`, `semantic_stage_enabled`, `ai_required` and `network_required` are all `False`, and every outcome carries an `honesty` block saying so in plain language. `scripts/verify_release_v02.py` asserts the default provider is `NoAIProvider` and that `iwtt/` imports nothing outside the standard library.
+**The scored recall path makes no AI call and no network request, ever.**
+`embeddings_enabled`, `semantic_stage_enabled`, `ai_required` and
+`network_required` are all `False`, and every outcome carries an `honesty` block
+saying so in plain language. The v0.3 semantic section and the reasoning modes
+are separate, explicitly requested paths; their defaults stay off and their
+results never enter the scored ranking. `scripts/verify_release_v02.py` asserts
+the default provider is `NoAIProvider` and that `iwtt/` imports nothing outside
+the standard library.
+
+**`iwtt/recall/reasoning.py` is a derived view, not an agent.** It has six closed
+modes, works deterministically with no provider, validates any provider output,
+cites real thoughts, writes no canonical row, and saves only explicit findings
+to the existing `derived_artifacts` table. Connection proposals require a human
+save and confirmation through the existing relationship workflow.
 
 ## Deliberate non-goals
 
 No spatial-world schema, vector database, account/sync layer, cloud dependency, analytics, telemetry, encryption/key-management system, agent, or autonomous relation confirmation is introduced. v0.1 is the durable brain underneath future presentation layers—not the full Mind World.
 
-**v0.2 keeps every one of those non-goals, and adds its own:** no embeddings or semantic stage, no mandatory embedding infrastructure, no repository/codebase AST ingestion, no PDF or large-scale external ingestion, no persisted graph layout, no whole-file JSON graph store, no in-memory canonical graph, no NetworkX/Leiden/Louvain dependency, no canonical clusters or canonical query-learning, no unrestricted agent access to the vault, no full Mind World, no infinite 2D/2.5D renderer, no avatars, multiplayer, social features, mobile client or voice assistant. External knowledge exists in v0.2 as reserved vocabulary, guards and documentation only — see [EXTERNAL_KNOWLEDGE_ARCHITECTURE.md](EXTERNAL_KNOWLEDGE_ARCHITECTURE.md).
+**v0.2 keeps every one of those non-goals, and adds its own:** no mandatory embedding infrastructure, no repository/codebase AST ingestion, no PDF or large-scale external ingestion, no persisted graph layout, no whole-file JSON graph store, no in-memory canonical graph, no NetworkX/Leiden/Louvain dependency, no canonical clusters or canonical query-learning, no unrestricted agent access to the vault, no full Mind World, no infinite 2D/2.5D renderer, no avatars, multiplayer, social features, mobile client or voice assistant. v0.3 adds an **opt-in** semantic section and **derived** cross-memory reasoning, but still no autonomous task runs, no automatic artifact or relationship creation, and no generated memory. External knowledge exists as reserved vocabulary, guards and documentation only — see [EXTERNAL_KNOWLEDGE_ARCHITECTURE.md](EXTERNAL_KNOWLEDGE_ARCHITECTURE.md).

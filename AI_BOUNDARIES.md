@@ -145,8 +145,40 @@ read from the vault, never an invented memory. When the stage runs, the honesty
 block states the model used and that one request left the process. See
 `RECALL_ENGINE.md` §12.
 
+### v0.3: cross-memory reasoning
+
+`iwtt/recall/reasoning.py` adds six explicit analytical modes — similar thoughts,
+connection discovery, recurring themes, possible tensions, thinking evolution and
+contextual explanation. The baseline is local deterministic arithmetic over the
+same canonical records and derived indexes the app already has; it needs no
+provider, key or network. A configured provider may add a **separate labelled
+view**, never a replacement for the baseline.
+
+* Provider output is treated as untrusted. Unknown target ids are dropped,
+  non-boolean verdicts are dropped, relationship types outside the closed
+  vocabulary fall back to `RELATED_TO`, and an error or malformed response
+  degrades to the deterministic baseline with a visible warning.
+* Every finding carries `citedThoughtIds` and bounded citations read from the
+  original thought at request time. Missing grounding yields an explicit
+  "no original thoughts" answer rather than a plausible invention.
+* Findings are ephemeral until a person saves one through
+  `POST /api/reasoning/save`. Saved findings go only to `derived_artifacts`,
+  are erasable with all derived data, and never edit an original, title,
+  revision, event or relationship.
+* Connection proposals are `AI_SUGGESTED` / `SUGGESTED` with
+  `requiresApproval: true`. They write nothing; only a person can save one and
+  then explicitly confirm it. Search, recall and reasoning never promote a
+  suggestion.
+* No credentials are stored in the frontend or SQLite. The server reads
+  provider configuration from the process environment / runtime config only.
+
 `scripts/verify_release_v02.py` asserts the default provider is `NoAIProvider`, that all four flags are false, and that `iwtt/` imports nothing outside the standard library.
 
 ## Not in v0.1
 
-No embeddings, semantic vector index, automatic clustering, contradiction detector, autonomous resurfacing, agent, or unattended AI task runs. The local search layer is deterministic lexical/fuzzy matching, not AI. Future AI capabilities should use the same derived artifact/provenance boundary and must not overwrite the author's original thought.
+None of these existed in v0.1: embeddings, semantic vector index, automatic
+clustering, contradiction review, autonomous resurfacing, agent, or unattended AI
+task runs. The local search layer was deterministic lexical/fuzzy matching, not AI.
+v0.3 adds an *opt-in* embedding section and a *derived* possible-tension review;
+neither is canonical. Future capabilities must use the same artifact/provenance
+boundary and must not overwrite the author's original thought.

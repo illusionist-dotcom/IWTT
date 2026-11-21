@@ -432,7 +432,52 @@ The scored path's defaults remain `ai_required = False`,
 the honesty block is replaced per query with a truthful account of the model and
 the single request made.
 
-## 13. What is not implemented
+## 13. Cross-memory reasoning (v0.3)
+
+`iwtt/recall/reasoning.py` is the analytical engine behind the Thinking Partner.
+It answers six explicit modes: `similar`, `connections`, `themes`,
+`contradictions`, `evolution` and `explain`. It reads canonical thoughts,
+revisions and events plus the rebuildable recall indexes, and returns
+**proposals** labelled `DERIVED_REASONING`. It is not a new search ranker and
+does not sit inside Find My Thought's scored path.
+
+* **A deterministic baseline always works.** With no provider, no key and no
+  network, similarity uses IDF-weighted shared terms over title/body/tags,
+  connection discovery uses the existing structural candidate pool, themes are
+  recurring terms across separate captures, possible tensions are opposing cues
+  with shared terms, evolution is a timestamped chronology of originals,
+  revisions and events, and explanations cite selected originals. If nothing
+  grounds an answer, it says so instead of inventing one.
+* **A provider is an optional second view.** When a provider is configured its
+  assessment is validated strictly: an id that was not supplied is dropped, a
+  non-boolean verdict is dropped, an unknown relationship type falls back to
+  `RELATED_TO`, and a failed or malformed response degrades to the deterministic
+  baseline with a warning. Provider text is labelled as a proposal and never
+  replaces the baseline findings.
+* **Every finding points home.** Each result carries `citedThoughtIds`; each
+  finding embeds a `citation` with the real `thoughtId`, title and a bounded
+  excerpt read live from the canonical entry at answer time. No generated text
+  becomes a memory, title, revision or relationship.
+* **Nothing is saved automatically.** Findings are ephemeral. Only
+  `POST /api/reasoning/save` writes one, and it writes to the existing
+  `derived_artifacts` table with a type from `REASONING_ARTIFACT_TYPES`. The
+  accompanying event records only that the action happened. All of it is erased
+  by “Delete all derived data” without touching a canonical byte.
+* **Connections still require a person.** A discovery finding is
+  `AI_SUGGESTED` / `SUGGESTED`, has `requiresApproval: true`, and writes no
+  relationship. The existing `POST /api/relationships` route saves it as an
+  unconfirmed proposal; `confirm_relationship()` is the only path to
+  `CONFIRMED` / `confirmedBy: USER`.
+* **The semantic neighbour view stays separate.** `similar` may attach a
+  `semanticNeighbours` section from the opt-in embedding index when one exists;
+  it cannot change the lexical `findings` order or scores. With no index or no
+  provider the section is absent.
+* **HTTP surface.** `GET /api/reasoning` publishes the closed mode list,
+  artifact types and boundary; `POST /api/reasoning` runs one mode with bounded
+  inputs; `POST /api/reasoning/save` persists a user-chosen finding. There is no
+  autonomous or scheduled reasoning.
+
+## 14. What is not implemented
 
 * Semantic **reranking** of the scored list, cross-encoder scoring, or any use
   of embeddings in the weighted formula — the stage is supplementary only.
@@ -442,3 +487,6 @@ the single request made.
 * Learned-to-rank models. Query-outcome memory is a documented, decaying,
   resettable arithmetic adjustment — not training.
 * Persisted graph layout, coordinates, or any whole-vault in-memory graph.
+* Autonomous reasoning, automatic artifact creation, automatic relationship
+  creation or confirmation, and any generated text treated as an original
+  capture. A person must request each finding and approve each canonical change.

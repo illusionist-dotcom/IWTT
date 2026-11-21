@@ -770,3 +770,17 @@ body { background-image:radial-gradient(ellipse at 92% 0%,rgba(167,139,250,.065)
 .toast.error { border-color:#9f685d; background:#613b3b; }
 button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,a:focus-visible { outline-color:rgba(128,100,159,.58); }
 @media(prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto !important; animation-duration:.01ms !important; animation-iteration-count:1 !important; transition-duration:.01ms !important; } }
+
+/* v0.3 — cross-memory reasoning findings and clickable original references. */
+.reasoning-findings { display:grid; gap:9px; margin-top:10px; }
+.reasoning-finding { border:1px solid #e4dcec; border-radius:10px; padding:10px 12px; background:#fcfafc; }
+.reasoning-finding > strong { display:block; color:#3d3149; font-size:12px; }
+.reasoning-finding p { margin:5px 0 7px; color:#6b6174; font-size:11px; line-height:1.5; }
+.reasoning-score { float:right; color:#806494; font-size:10px; }
+.reasoning-refs { display:flex; flex-wrap:wrap; gap:6px; }
+.reasoning-ref { display:flex; flex-direction:column; gap:2px; max-width:100%; text-align:left; border:1px solid #ded2e8; border-radius:8px; background:#fff; padding:6px 8px; cursor:pointer; }
+.reasoning-ref:hover { border-color:#806494; }
+.reasoning-ref strong { color:#463552; font-size:11px; }
+.reasoning-ref small { color:#81748e; font-size:10px; }
+.reasoning-provider-view { margin-top:12px; border-top:1px dashed #e0d6e8; padding-top:10px; }
+.reasoning-provider-view p { color:#574e60; font-size:11px; line-height:1.5; }

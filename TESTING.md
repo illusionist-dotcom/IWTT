@@ -8,7 +8,7 @@ tests decode UTF-8 explicitly rather than relying on the host ANSI code page. Wi
 11 performance measurements are recorded separately in `BENCHMARKS.md`.
 
 ```bash
-python -m unittest discover -s tests -v        # gate 1 — 246 tests
+python -m unittest discover -s tests -v        # gate 1 — 275 tests
 python scripts/verify_release.py               # gate 2 — the v0.1 contract
 python scripts/verify_release_v02.py           # gate 3 — the v0.2 contract
 python scripts/benchmark_recall.py --suite     # gate 4 — measured performance
@@ -23,7 +23,7 @@ git status --short        # nothing unintended is about to be committed
 
 ---
 
-## Gate 1 — Automated tests (131)
+## Gate 1 — Automated tests (275)
 
 Tests use temporary directories and temporary SQLite databases; they never touch the
 user's vault.
@@ -36,8 +36,13 @@ user's vault.
 | `test_query_memory.py` | 16 | Feedback weights, decay, corroboration gating, clamping, reset, inspection, and that learning never touches canonical data or confirms a suggestion |
 | `test_determinism.py` | 15 | Identical payloads across repeats, rebuilds, restarts and derived deletion; insertion-order independence; published tie-breaks; stable clusters; reproducible feedback effects that reset undoes exactly |
 | `test_layering.py` | 29 | Module boundaries and the dependency classifier; per-thought vs global derived-table contracts; canonical deletion cannot contaminate derived aggregates; the production deletion path; capability-manifest honesty; cross-domain documentation; camelCase public payloads; local-first and no-AI guarantees |
+| `test_ai_links.py` | 28 | Explicit AI link checks, pairwise comparisons and vault sweeps; candidate diversity, untrusted output, derived artifacts and the approval workflow |
+| `test_providers.py` | 26 | No-AI default, `MockProvider`, Ollama preset, model listing, invalid endpoints/credentials and deterministic provider switching |
+| `test_semantic.py` | 47 | Opt-in embedding index, build/status/erase routes, separate semantic section, stale-vector detection and provider failures |
+| `test_reasoning.py` | 29 | All six reasoning modes without a provider, similarity ranking, connection discovery, themes, tensions, chronology, citations, canonical immutability, invalid provider responses and the save/approval workflow |
 | `test_canonical_destruction.py` | 3 | **The mandatory destructive verification** (below) |
 | `test_migration_v01_to_v02.py` | 7 | Migration from a genuine v0.1-format file (below) |
+| `test_web_interface.py` | 14 | Static button/form/route wiring, explicit rendering for every artifact type, and Node execution of the artifact renderer |
 
 ### The v0.1 tests are frozen
 
@@ -152,6 +157,33 @@ no test ever contacts a network:
 - **The HTTP surfaces.** Link check, pairwise and sweep all answer; the pairwise
   route refuses a self-comparison; a saved proposal stays `SUGGESTED` until a
   human confirms it; and all three routes answer **503** without a provider.
+
+### Cross-memory reasoning tests
+
+`test_reasoning.py` exercises the Thinking Partner engine with no provider, with
+the deterministic mock, with a failing provider and with a provider returning
+malformed data:
+
+- **Every mode works offline.** Similarity, connections, themes, contradictions,
+  evolution and explanation all return derived findings under `NoAIProvider`;
+  evolution requires a topic or selected thought, and an ungrounded explanation
+  returns no answer rather than an invented one.
+- **Ranking and citations.** Similarity excludes the source, orders by descending
+  IDF-weighted score and cites each real thought; themes require recurrence
+  across separate captures; possible tensions cite both originals; evolution
+  preserves originals, revisions and events in timestamp order.
+- **Boundaries.** No reasoning mode changes canonical text, creates a
+  relationship, confirms a suggestion or writes an artifact. A connection
+  finding is `AI_SUGGESTED` / `SUGGESTED`, `requiresApproval: true`, and becomes
+  canonical only through the existing save-then-confirm path.
+- **Provider independence.** A provider adds only a labelled `providerView`;
+  switching back to no provider restores the baseline. A missing provider is
+  normal, a thrown error degrades with a warning, and unknown ids, non-boolean
+  verdicts and out-of-vocabulary types are filtered or normalised.
+- **HTTP and erasure.** The status route publishes modes and boundary, the run
+  route validates inputs, the save route requires a real mode and original
+  thought, and a saved finding is erased with all other derived data while
+  canonical bytes stay identical.
 
 `test_web_interface.py` adds static guards on the browser interface, because a
 dead button is invisible to every other gate: the server does not know a control
