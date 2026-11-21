@@ -40,6 +40,7 @@ Run `dist\\IWTT-Thought-Communities.exe`; it opens the app on a free loopback po
 
 - **Provider-independent AI** — choose Ollama locally (zero cost), any OpenAI-compatible endpoint, or a deterministic offline mock from Data & privacy. The endpoint's model list can be fetched without sending thought text. No API key is required for any completed feature.
 - **Opt-in semantic retrieval** — build an embedding index explicitly, then Find My Thought shows an additional “Same meaning, different words” section. A query about a *clock* can find a thought about a *timer* with no shared words. Every hit is a real thought with a clickable link to the original entry; embeddings never enter the scored ranking, never change its weights, and the index is erasable. See [RECALL_ENGINE.md](RECALL_ENGINE.md) §12.
+- **Thinking Partner view** — a dedicated nav view with seven ways to ask: Ask My Vault, Explore Ideas, Find Connections, Compare Thoughts, Identify Patterns, Track Thinking Evolution, and Review & Reflect. It offers suggested prompts, lets you select memories, shows clickable citations and explicit uncertainty, and never edits, deletes or connects anything without your action.
 - **Cross-memory reasoning engine** — six bounded modes (`similar`, `connections`, `themes`, `contradictions`, `evolution`, `explain`) compare your own captures and return cited, explicitly derived findings. The deterministic baseline works with no provider; a configured provider may add a labelled proposal but cannot invent a memory or write a relationship. Findings are saved only when you ask, into erasable derived artifacts. See [RECALL_ENGINE.md](RECALL_ENGINE.md) §13.
 
 ## What is new in v0.2
@@ -81,6 +82,7 @@ Run `dist\\IWTT-Thought-Communities.exe`; it opens the app on a free loopback po
 - **Import a file:** choose a supported local text or source file, review a preview, and preserve its extracted text as an imported thought. File content is not silently rewritten or sent to AI. The optional AI summary remains an explicit, separate action.
 - **AI interpretation:** optionally configure a hosted OpenAI-compatible provider in Data & privacy. This uses IWTT's existing local app process; it does not require a second local server. Only the selected thought text is sent when you explicitly request interpretation. A provider account/key and network connection are required for hosted AI.
 - **AI link detection:** press **Check connections** on a thought to have the provider read it against up to 16 candidates and report which are linked, and which were read and judged unrelated. The Connections view adds a **compare two thoughts** box and a bounded **vault sweep**. Nothing is saved until you press **Save proposal**, and a saved proposal stays unconfirmed until you confirm it.
+- **Thinking Partner:** open the dedicated nav view to ask across your own memories. Choose one of seven questions, optionally select up to 20 thoughts, use a suggested prompt or a follow-up, and open any cited original directly. Findings are derived and erasable; saving a finding or a connection proposal is always a separate, explicit action, and a saved proposal remains unconfirmed until you confirm it.
 - **Timeline:** explore dated lifecycle, edit, tag, and relationship events.
 - **Data & privacy:** export/import, backup, demo data, rebuild/delete derived data, and inspect local storage path.
 
@@ -93,7 +95,7 @@ Canonical truth lives in SQLite tables for thoughts, revisions, tags, tag assign
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v        # 275 tests
+python -m unittest discover -s tests -v        # 286 tests
 python scripts/verify_release.py               # the v0.1 contract, end to end
 python scripts/verify_release_v02.py           # the v0.2 contract, end to end
 python scripts/benchmark_recall.py --suite     # 1,000 and 10,000 thoughts, measured
@@ -117,7 +119,7 @@ same ranking.
 - `iwtt/server.py` — standard-library HTTP API and static web server (v0.1 routes unchanged; v0.2/v0.3 routes added).
 - `iwtt/ai.py` — no-AI fallback and opt-in provider interface (MockProvider, Ollama preset, OpenAI-compatible adapter, embeddings). **Not used by the scored recall path.**
 - `web/` — self-contained browser interface; no external CSS, JS, fonts, or image dependencies.
-- `tests/` — 275 automated tests: store, recall engine, graph intelligence, query memory, determinism, layering boundaries, canonical destruction, v0.1→v0.2 migration, providers, semantic retrieval, cross-memory reasoning, the AI link-detection surface, and the browser interface wiring.
+- `tests/` — 286 automated tests: store, recall engine, graph intelligence, query memory, determinism, layering boundaries, canonical destruction, v0.1→v0.2 migration, providers, semantic retrieval, cross-memory reasoning, the Thinking Partner view, the AI link-detection surface, and the browser interface wiring.
 - `scripts/` — `verify_release.py`, `verify_release_v02.py`, `benchmark_recall.py`, `build_sample_vault.py`.
 - `research/graphify-acquisition-audit/` — the research dossier v0.2 was designed from. Retained unchanged; see [GRAPHIFY_ADAPTATION_NOTES.md](GRAPHIFY_ADAPTATION_NOTES.md).
 

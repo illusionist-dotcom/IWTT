@@ -8,7 +8,7 @@ tests decode UTF-8 explicitly rather than relying on the host ANSI code page. Wi
 11 performance measurements are recorded separately in `BENCHMARKS.md`.
 
 ```bash
-python -m unittest discover -s tests -v        # gate 1 — 275 tests
+python -m unittest discover -s tests -v        # gate 1 — 286 tests
 python scripts/verify_release.py               # gate 2 — the v0.1 contract
 python scripts/verify_release_v02.py           # gate 3 — the v0.2 contract
 python scripts/benchmark_recall.py --suite     # gate 4 — measured performance
@@ -23,7 +23,7 @@ git status --short        # nothing unintended is about to be committed
 
 ---
 
-## Gate 1 — Automated tests (275)
+## Gate 1 — Automated tests (286)
 
 Tests use temporary directories and temporary SQLite databases; they never touch the
 user's vault.
@@ -40,6 +40,7 @@ user's vault.
 | `test_providers.py` | 26 | No-AI default, `MockProvider`, Ollama preset, model listing, invalid endpoints/credentials and deterministic provider switching |
 | `test_semantic.py` | 47 | Opt-in embedding index, build/status/erase routes, separate semantic section, stale-vector detection and provider failures |
 | `test_reasoning.py` | 29 | All six reasoning modes without a provider, similarity ranking, connection discovery, themes, tensions, chronology, citations, canonical immutability, invalid provider responses and the save/approval workflow |
+| `test_thinking_partner.py` | 11 | Dedicated nav view, seven human questions mapped to closed modes, suggested prompts, memory selection, clickable citations, explicit uncertainty, follow-up context and no automatic canonical writes |
 | `test_canonical_destruction.py` | 3 | **The mandatory destructive verification** (below) |
 | `test_migration_v01_to_v02.py` | 7 | Migration from a genuine v0.1-format file (below) |
 | `test_web_interface.py` | 14 | Static button/form/route wiring, explicit rendering for every artifact type, and Node execution of the artifact renderer |
@@ -184,6 +185,22 @@ malformed data:
   route validates inputs, the save route requires a real mode and original
   thought, and a saved finding is erased with all other derived data while
   canonical bytes stay identical.
+
+### Thinking Partner view tests
+
+`test_thinking_partner.py` checks the browser surface of the reasoning engine.
+It asserts that the dedicated nav item exists alongside every older view, that
+the router renders it, and that all seven labels map only to the six closed
+modes. It also checks the boundaries that matter in an AI interface:
+
+- suggested prompts and follow-ups are clickable and keep the selected context;
+- up to 20 memories can be selected explicitly, and selecting one never edits it;
+- every finding has a clickable reference to a real original thought;
+- uncertainty, provider-only proposals and "no grounded finding" are visible;
+- the view works with no provider, using the deterministic local baseline;
+- only explicit save actions call `/api/reasoning/save` or
+  `/api/relationships`, always with `AI_SUGGESTED`, and no partner action calls
+  a confirmation route.
 
 `test_web_interface.py` adds static guards on the browser interface, because a
 dead button is invisible to every other gate: the server does not know a control

@@ -476,6 +476,13 @@ does not sit inside Find My Thought's scored path.
   artifact types and boundary; `POST /api/reasoning` runs one mode with bounded
   inputs; `POST /api/reasoning/save` persists a user-chosen finding. There is no
   autonomous or scheduled reasoning.
+* **Dedicated view.** `web/index.html` adds a Thinking Partner nav item beside
+  Find My Thought. `web/app.js` turns the six modes into seven questions — Ask
+  My Vault, Explore Ideas, Find Connections, Compare Thoughts, Identify
+  Patterns, Track Thinking Evolution and Review & Reflect — with suggested
+  prompts, up to 20 selected memories, clickable citations, follow-up context
+  and visible uncertainty. Saving a finding or a connection proposal is a
+  separate button; nothing is auto-edited, auto-deleted or auto-confirmed.
 
 ## 14. What is not implemented
 

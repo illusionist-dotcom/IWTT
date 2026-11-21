@@ -169,6 +169,11 @@ view**, never a replacement for the baseline.
   `requiresApproval: true`. They write nothing; only a person can save one and
   then explicitly confirm it. Search, recall and reasoning never promote a
   suggestion.
+* The dedicated Thinking Partner view exposes these modes as seven questions
+  with selectable memories, suggested prompts, clickable citations and explicit
+  uncertainty. It never auto-saves, auto-connects or auto-confirms; the only
+  writes are the explicitly pressed *Save finding* and *Save proposal for review*
+  buttons.
 * No credentials are stored in the frontend or SQLite. The server reads
   provider configuration from the process environment / runtime config only.
 

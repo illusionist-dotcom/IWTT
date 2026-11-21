@@ -30,6 +30,20 @@
     // AI link review beyond a single thought: a pairwise comparison and a
     // bounded vault sweep.  Both are explicit, both are proposals only.
     aiLinkReview: { pair: null, pairLoading: false, sweep: null, sweepLoading: false },
+    // v0.3 — Thinking Partner.  Findings are derived proposals; nothing here
+    // is written to the vault unless the person presses an explicit save.
+    partner: {
+      tool: 'ask',
+      query: '',
+      selectedIds: [],
+      result: null,
+      loading: false,
+      error: '',
+      status: null,
+      thoughts: [],
+      useProvider: true,
+      includeGraveyard: false,
+    },
     importedFile: { name: '', text: '', error: '' },
     captureDraft: null,
     vaultSourceType: 'ALL',
@@ -40,6 +54,20 @@
   const SOURCE_NAMES = { THOUGHT: 'My thought', IDEA: 'Idea', MESSAGE: 'Message', PROMPT: 'Prompt', IMPORTED: 'Imported', AI_INTERPRETATION: 'AI interpretation' };
   const COMMUNITY_COLORS = ['#a78bfa', '#55d6be', '#f0abfc', '#d4af37', '#fb7185', '#7dd3fc', '#c4b5fd', '#67e8f9'];
   const RELATION_TYPES = ['INSPIRED_BY', 'LED_TO', 'RELATED_TO', 'CONTRADICTS', 'SUPPORTS', 'DEPENDS_ON', 'PART_OF', 'SUPERSEDES', 'REVIVES', 'TESTS', 'IMPLEMENTED_BY'];
+
+  // The seven Thinking Partner entry points are different *questions*, not
+  // seven different ranks.  Each maps onto one of the six closed reasoning
+  // modes; compare and ask both use grounded explanation with different inputs.
+  const PARTNER_TOOLS = [
+    { key: 'ask', mode: 'explain', icon: '?', label: 'Ask My Vault', hint: 'A grounded answer from selected memories.', prompts: ['What have I been thinking about lately?', 'Which of my notes disagree with each other?'] },
+    { key: 'explore', mode: 'similar', icon: '✧', label: 'Explore Ideas', hint: 'Neighbours of one selected thought.', prompts: ['Find thoughts close to this one', 'What else did I write about this subject?'] },
+    { key: 'connect', mode: 'connections', icon: '⌁', label: 'Find Connections', hint: 'Unsaved links worth your review.', prompts: ['Which unlinked thought might this connect to?', 'Show me candidate links from this thought'] },
+    { key: 'compare', mode: 'explain', icon: '⇄', label: 'Compare Thoughts', hint: 'Read two or more captures together.', prompts: ['How do these two thoughts relate?', 'What is different between these captures?'] },
+    { key: 'patterns', mode: 'themes', icon: '⁂', label: 'Identify Patterns', hint: 'Recurring terms across separate captures.', prompts: ['Which ideas keep returning in my notes?', 'What subjects appear again and again?'] },
+    { key: 'evolution', mode: 'evolution', icon: '◷', label: 'Track Thinking Evolution', hint: 'Originals, revisions and events in order.', prompts: ['How did my thinking on this change over time?', 'Show the history of this idea'] },
+    { key: 'reflect', mode: 'contradictions', icon: '⚖', label: 'Review & Reflect', hint: 'Possible tensions to reread, not verdicts.', prompts: ['Where do my captures pull in different directions?', 'Which thoughts might contradict each other?'] },
+  ];
+  const partnerTool = key => PARTNER_TOOLS.find(item => item.key === key) || PARTNER_TOOLS[0];
 
   const esc = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
   const attr = esc;
@@ -87,7 +115,7 @@
   }
 
   function setTopbar() {
-    const LABELS = { data: 'DATA & PRIVACY', recall: 'FIND MY THOUGHT', clusters: 'DERIVED CLUSTERS', connections: 'CONNECTION EXPLORER' };
+    const LABELS = { data: 'DATA & PRIVACY', recall: 'FIND MY THOUGHT', partner: 'THINKING PARTNER', clusters: 'DERIVED CLUSTERS', connections: 'CONNECTION EXPLORER' };
     const label = state.view === 'detail' ? 'THOUGHT DETAIL' : (LABELS[state.view] || state.view.toUpperCase());
     document.getElementById('topbar-label').textContent = label;
     document.body.dataset.view = state.view;
@@ -140,6 +168,7 @@
         case 'graveyard': markup = await renderGraveyard(); break;
         case 'connections': markup = await renderConnections(); break;
         case 'recall': markup = await renderRecall(); break;
+        case 'partner': markup = await renderPartner(); break;
         case 'clusters': markup = await renderClusters(); break;
         case 'import': markup = renderFileImport(); break;
         case 'data': markup = await renderData(); break;
@@ -167,6 +196,10 @@
           input.focus({ preventScroll: true });
           if (state.recall.query) input.setSelectionRange(input.value.length, input.value.length);
         }
+      }
+      if (state.view === 'partner') {
+        const input = document.getElementById('partner-query');
+        if (input && !state.partner.result) input.focus({ preventScroll: true });
       }
     } catch (error) {
       if (token !== state.renderToken) return;
@@ -588,6 +621,221 @@
         </form>
       </section>
       <div id="recall-results">${recallResults(outcome, semanticIndex)}</div>`;
+  }
+
+  // ---------------------------------------------------------------- partner --
+  // A dedicated view for questions *across* memories.  It never shares the
+  // scored recall ranking, and no finding reaches the vault without a person.
+  function partnerRefs(item) {
+    const refs = new Map();
+    const add = ref => {
+      if (ref?.thoughtId && !refs.has(ref.thoughtId)) refs.set(ref.thoughtId, ref);
+    };
+    add(item.citation); add(item.source); add(item.target); add(item.left); add(item.right);
+    if (Array.isArray(item.evidence)) item.evidence.slice(0, 4).forEach(add);
+    if (!refs.size && Array.isArray(item.thoughtIds)) {
+      item.thoughtIds.slice(0, 4).forEach(id => add({ thoughtId: id }));
+    }
+    return [...refs.values()].slice(0, 4).map(ref => {
+      const thought = state.partner.thoughts.find(entry => entry.id === ref.thoughtId);
+      const title = ref.title || titleOf(thought || {}) || 'Original thought';
+      const excerpt = ref.excerpt || (thought ? words(thought.currentText || thought.originalText, 90) : '');
+      return '<button class="reasoning-ref" type="button" data-open-thought="' + attr(ref.thoughtId) + '">' +
+        '<strong>' + esc(title) + '</strong>' +
+        (excerpt ? '<small>' + esc(String(excerpt).slice(0, 120)) + '</small>' : '') + '</button>';
+    }).join('');
+  }
+
+  function partnerFinding(item, index) {
+    const tool = partnerTool(state.partner.tool);
+    const title = item.title || item.label || item.observation ||
+      (item.kind ? String(item.kind).replaceAll('_', ' ') : 'Finding');
+    const detail = item.reason || item.observation || item.caveat || item.note || item.excerpt ||
+      (Array.isArray(item.sharedTerms) ? 'Shared terms: ' + item.sharedTerms.join(' · ') : '');
+    const score = item.score !== undefined ? ' · ' + Math.round(item.score * 100) + '% ranked match'
+      : item.similarity !== undefined ? ' · ' + Math.round(item.similarity * 100) + '% semantic'
+      : item.strength !== undefined ? ' · strength ' + Math.round(item.strength * 100) + '%'
+      : item.tension !== undefined ? ' · tension clue ' + Math.round(item.tension * 100) + '%' : '';
+    const uncertainty = item.uncertainty || item.caveat ||
+      (tool.key === 'reflect' ? 'A prompt to reread both originals, not a verdict about which is right.'
+        : 'A derived clue from your captures, not a claim about your intent.');
+    const proposal = item.requiresApproval
+      ? '<div class="partner-actions"><span class="status-pill suggested">Proposal only · nothing saved</span>' +
+        '<button class="button small" type="button" data-action="partner-save-connection" data-index="' + index + '">Save proposal for review</button></div>'
+      : '';
+    return '<article class="partner-finding"><div class="partner-finding-head"><strong>' + esc(title) + '</strong>' +
+      (score ? '<span class="reasoning-score">' + esc(score) + '</span>' : '') + '</div>' +
+      (detail ? '<p>' + esc(detail) + '</p>' : '') +
+      '<p class="partner-uncertainty">' + esc(uncertainty) + '</p>' +
+      (partnerRefs(item) ? '<div class="reasoning-refs">' + partnerRefs(item) + '</div>' : '') +
+      proposal + '</article>';
+  }
+
+  function partnerFollowUps() {
+    const result = state.partner.result;
+    if (!result) return '';
+    const selected = state.partner.selectedIds.length;
+    const options = [
+      { tool: 'ask', prompt: 'What can you say about these memories without guessing?', label: 'Ask for a grounded summary' },
+      { tool: 'reflect', prompt: 'Do any of these captures disagree with each other?', label: 'Look for tensions' },
+      { tool: 'evolution', prompt: 'Show how this thinking changed over time.', label: 'Trace the history' },
+    ];
+    if (selected >= 2) options.unshift({ tool: 'compare', prompt: 'Compare the memories I selected.', label: 'Compare selected memories' });
+    if (selected === 1) options.unshift({ tool: 'connect', prompt: 'Find possible links from the first selected memory.', label: 'Look for links' });
+    return '<section class="panel partner-followups"><div class="section-head" style="margin-top:0"><h2>Follow the thread</h2><span class="section-meta">NOT A NEW TASK · SAME VAULT</span></div>' +
+      '<p class="revision-note">Each follow-up keeps your selected memories and asks a narrower question. You can change the selection at any time.</p>' +
+      '<div class="partner-prompts">' + options.slice(0, 4).map(item =>
+        '<button class="chip" type="button" data-action="partner-followup" data-tool="' + attr(item.tool) + '" data-prompt="' + attr(item.prompt) + '">' + esc(item.label) + '</button>'
+      ).join('') + '</div></section>';
+  }
+
+  function partnerResultMarkup() {
+    const partner = state.partner;
+    if (partner.loading) {
+      return '<section class="panel partner-result"><div class="loading-state"><span class="loader"></span><p>Reading your captures locally…</p></div></section>';
+    }
+    if (partner.error) {
+      return '<section class="panel partner-result"><div class="empty-state"><div class="empty-icon">!</div><h3>No answer was produced</h3><p>' + esc(partner.error) + '</p><p class="revision-note">Nothing in the vault was changed.</p></div></section>';
+    }
+    const result = partner.result;
+    if (!result) {
+      return '<section class="panel partner-result"><div class="empty-state"><div class="empty-icon">◇</div><h3>Ask about your own thinking</h3>' +
+        '<p>Choose a question above, add a focus phrase, and optionally select memories. IWTT will show only what it can ground in your captures, with the uncertainty stated.</p>' +
+        '<p class="revision-note">Nothing is saved, edited or connected until you explicitly ask for it.</p></div></section>';
+    }
+    const findings = Array.isArray(result.findings) ? result.findings : [];
+    const view = result.providerView;
+    return '<section class="panel partner-result"><div class="partner-result-head">' +
+      '<span class="derived-mark">DERIVED READING · ' + esc(String(result.mode || '').replaceAll('_', ' ')) + '</span>' +
+      '<h2>' + esc(partnerTool(partner.tool).label) + '</h2>' +
+      (result.prompt ? '<p class="partner-context">Asked: “' + esc(result.prompt) + '”' +
+        (partner.selectedIds.length ? ' · ' + partner.selectedIds.length + ' selected memor' + (partner.selectedIds.length === 1 ? 'y' : 'ies') : '') + '</p>' : '') +
+      '<p class="partner-note">' + esc(result.summary || result.note || '') + '</p>' +
+      '<p class="partner-provider">' + esc(result.provider || '') + (result.model ? ' · ' + esc(result.model) : '') + '</p>' +
+      (result.warnings || []).map(warning => '<p class="partner-warning">' + esc(warning) + '</p>').join('') +
+      '</div>' +
+      (findings.length ? '<div class="partner-findings">' + findings.map(partnerFinding).join('') + '</div>'
+        : '<div class="empty-state"><div class="empty-icon">—</div><h3>No grounded finding</h3><p>' + esc(result.note || 'IWTT found nothing it can honestly support from these memories.') + '</p></div>') +
+      (view ? '<div class="reasoning-provider-view"><span class="derived-mark">PROVIDER VIEW · PROPOSAL ONLY</span><p>' + esc(view.summary || '') + '</p>' +
+        (partnerRefs(view) ? '<div class="reasoning-refs">' + partnerRefs(view) + '</div>' : '') +
+        '<p class="partner-uncertainty">' + esc(view.caveat || 'One provider reading; never the source of truth.') + '</p></div>' : '') +
+      '<p class="partner-boundary">' + esc(result.boundary || 'Derived, erasable, and never a change to your original words.') + '</p>' +
+      (findings.length ? '<div class="data-actions"><button class="button small" type="button" data-action="partner-save">Save this finding as derived data</button></div>' : '') +
+      '</section>' + partnerFollowUps();
+  }
+
+  async function renderPartner() {
+    let status = null;
+    let thoughts = [];
+    try { status = (await api('/api/reasoning')).data; } catch (_) { status = null; }
+    try { thoughts = (await api('/api/thoughts?status=ALL')).data.thoughts || []; } catch (_) { thoughts = []; }
+    state.partner.status = status;
+    state.partner.thoughts = thoughts;
+    const partner = state.partner;
+    const tool = partnerTool(partner.tool);
+    const selected = new Set(partner.selectedIds);
+    const providerLine = status?.providerAvailable
+      ? 'Provider: ' + esc(status.provider) + (status.model ? ' · ' + esc(status.model) : '') + '. Its view is optional and labelled.'
+      : 'No provider configured. The deterministic local baseline is active — no key, no network, no paid service.';
+    return '<section class="view-heading partner-heading"><div><span class="eyebrow">THINKING PARTNER · DERIVED REASONING</span>' +
+      '<h1>Think with what you actually wrote.</h1>' +
+      '<p>Ask across memories, compare them, follow a theme or inspect a change. Every answer cites the original captures and says what it cannot know.</p></div>' +
+      '<div class="heading-actions"><button class="button ghost" data-view="recall">Find a specific thought</button></div></section>' +
+      '<section class="partner-tools"><div class="section-head" style="margin-top:0"><h2>Choose a way to think</h2><span class="section-meta">SEVEN QUESTIONS · SIX CLOSED MODES</span></div>' +
+      '<div class="partner-tool-grid">' + PARTNER_TOOLS.map(item =>
+        '<button class="partner-tool ' + (item.key === tool.key ? 'selected' : '') + '" type="button" data-action="partner-tool" data-tool="' + item.key + '">' +
+        '<span class="partner-tool-icon">' + esc(item.icon) + '</span><strong>' + esc(item.label) + '</strong><small>' + esc(item.hint) + '</small></button>'
+      ).join('') + '</div></section>' +
+      '<div class="partner-workspace"><div class="partner-left">' +
+      '<section class="panel partner-ask"><div class="section-head" style="margin-top:0"><h2>' + esc(tool.label) + '</h2><span class="section-meta">' + esc(tool.hint) + '</span></div>' +
+      '<form id="partner-form" class="partner-form form" role="search">' +
+      '<label class="field">Question or focus<textarea id="partner-query" name="query" rows="3" maxlength="2000" placeholder="' + attr(tool.prompts[0]) + '">' + esc(partner.query) + '</textarea></label>' +
+      '<div class="partner-prompts">' + tool.prompts.map(prompt =>
+        '<button class="chip" type="button" data-action="partner-prompt" data-prompt="' + attr(prompt) + '">' + esc(prompt) + '</button>'
+      ).join('') + '</div>' +
+      '<div class="partner-options"><span class="checkbox-control"><input type="checkbox" id="partner-use-provider" ' + (partner.useProvider ? 'checked' : '') + '><label for="partner-use-provider">Allow configured provider view</label></span>' +
+      '<span class="checkbox-control"><input type="checkbox" id="partner-include-graveyard" ' + (partner.includeGraveyard ? 'checked' : '') + '><label for="partner-include-graveyard">Include Graveyard</label></span></div>' +
+      '<p class="revision-note">' + esc(providerLine) + '</p>' +
+      '<div class="data-actions"><button class="button primary" type="submit">' + (partner.loading ? 'Reading…' : 'Ask the partner') + '</button>' +
+      '<button class="button ghost" type="button" data-action="partner-clear">Clear answer</button></div></form></section>' +
+      '<section class="panel partner-memory-panel"><div class="section-head" style="margin-top:0"><h2>Choose memories</h2><span class="section-meta">' + partner.selectedIds.length + ' SELECTED · MAX 20</span></div>' +
+      '<p class="revision-note">Selection grounds Ask, Compare, Explore, Connections and Evolution. Patterns and Reflect read the active vault. Choosing a memory never edits it.</p>' +
+      (thoughts.length ? '<div class="partner-memory-list">' + thoughts.slice(0, 80).map(item =>
+        '<label class="partner-memory ' + (selected.has(item.id) ? 'selected' : '') + '" data-action="partner-select" data-id="' + attr(item.id) + '">' +
+        '<input type="checkbox" ' + (selected.has(item.id) ? 'checked' : '') + ' aria-label="Select ' + attr(titleOf(item)) + '">' +
+        '<span><strong>' + esc(titleOf(item)) + '</strong><small>' + esc(words(item.currentText || item.originalText, 90)) + '</small></span></label>'
+      ).join('') + '</div>' : '<div class="empty-state"><div class="empty-icon">✳</div><h3>No memories to select yet</h3><p>Capture a thought first; the partner only reasons over what you actually wrote.</p></div>') +
+      (partner.selectedIds.length ? '<div class="data-actions"><button class="button small ghost" type="button" data-action="partner-clear-selection">Clear selection</button></div>' : '') +
+      '</section></div><div class="partner-right">' + partnerResultMarkup() + '</div></div>';
+  }
+
+  function syncPartnerQuery() {
+    const input = document.getElementById('partner-query');
+    if (input) state.partner.query = String(input.value || '').slice(0, 2000);
+  }
+
+  async function runPartner() {
+    const partner = state.partner;
+    const tool = partnerTool(partner.tool);
+    const query = String(partner.query || '').trim();
+    const selected = partner.selectedIds.slice(0, 20);
+    if (tool.key === 'explore' || tool.key === 'connect') {
+      if (!selected.length) { partner.error = 'Select one thought to ' + tool.label.toLowerCase() + '.'; partner.result = null; return render(); }
+    } else if (tool.key === 'compare' && selected.length < 2) {
+      partner.error = 'Select at least two thoughts to compare them.'; partner.result = null; return render();
+    } else if (tool.key === 'ask' && !query && !selected.length) {
+      partner.error = 'Add a question or select at least one memory.'; partner.result = null; return render();
+    } else if (tool.key === 'evolution' && !query && !selected.length) {
+      partner.error = 'Add a topic or select a thought to trace its evolution.'; partner.result = null; return render();
+    }
+    const payload = {
+      mode: tool.mode,
+      query,
+      thoughtIds: selected,
+      limit: 8,
+      useProvider: partner.useProvider,
+      includeGraveyard: partner.includeGraveyard,
+    };
+    if ((tool.key === 'explore' || tool.key === 'connect' || tool.key === 'evolution') && selected.length) {
+      payload.thoughtId = selected[0];
+    }
+    if (tool.key === 'patterns' || tool.key === 'reflect') {
+      delete payload.thoughtIds;
+      if (selected.length === 1 && tool.key === 'reflect') payload.thoughtId = selected[0];
+    }
+    partner.loading = true;
+    partner.error = '';
+    partner.result = null;
+    await render();
+    try {
+      const { data } = await api('/api/reasoning', { method: 'POST', body: payload });
+      data.prompt = query || (selected.length ? partner.selectedIds.length + ' selected memories' : tool.label);
+      data.partnerTool = tool.key;
+      partner.result = data;
+    } catch (error) {
+      partner.error = error.message;
+    } finally {
+      partner.loading = false;
+    }
+    return render();
+  }
+
+  async function savePartnerFinding() {
+    const result = state.partner.result;
+    if (!result) throw new Error('Run a question before saving a finding.');
+    await api('/api/reasoning/save', { method: 'POST', body: { mode: result.mode, finding: result } });
+    toast('Finding saved as derived data. Your original captures are unchanged.');
+  }
+
+  async function savePartnerConnection(button) {
+    const result = state.partner.result;
+    const finding = result?.findings?.[Number(button.dataset.index)];
+    if (!finding?.sourceId || !finding?.targetId) throw new Error('That proposal is no longer available.');
+    await api('/api/relationships', { method: 'POST', body: {
+      sourceId: finding.sourceId, targetId: finding.targetId,
+      type: finding.type || 'RELATED_TO', provenance: 'AI_SUGGESTED',
+    } });
+    toast('Proposal saved as unconfirmed. Open Connections to review it before confirming.');
   }
 
   /* ======================= v0.2 · DERIVED CLUSTERS ======================= */
@@ -1303,6 +1551,44 @@
     }
     if (action === 'recall-feedback') return recallFeedback(button);
     if (action === 'recall-breakdown') return loadBreakdown(button);
+    // ---- v0.3 Thinking Partner: every action is explicit and derived ----
+    if (action === 'partner-tool') {
+      syncPartnerQuery();
+      state.partner.tool = button.dataset.tool || 'ask';
+      state.partner.result = null; state.partner.error = '';
+      return render();
+    }
+    if (action === 'partner-prompt') {
+      state.partner.query = button.dataset.prompt || '';
+      return runPartner();
+    }
+    if (action === 'partner-followup') {
+      state.partner.tool = button.dataset.tool || state.partner.tool;
+      state.partner.query = button.dataset.prompt || '';
+      return runPartner();
+    }
+    if (action === 'partner-select') {
+      syncPartnerQuery();
+      const selected = state.partner.selectedIds;
+      const index = selected.indexOf(id);
+      if (index >= 0) selected.splice(index, 1);
+      else if (selected.length >= 20) { toast('Select at most 20 memories for one question.', 'error'); return; }
+      else selected.push(id);
+      state.partner.result = null; state.partner.error = '';
+      return render();
+    }
+    if (action === 'partner-clear-selection') {
+      syncPartnerQuery();
+      state.partner.selectedIds = [];
+      state.partner.result = null; state.partner.error = '';
+      return render();
+    }
+    if (action === 'partner-clear') {
+      state.partner.result = null; state.partner.error = ''; state.partner.query = '';
+      return render();
+    }
+    if (action === 'partner-save') return savePartnerFinding();
+    if (action === 'partner-save-connection') return savePartnerConnection(button);
     if (action === 'load-neighbourhood') return loadNeighbourhood();
     if (action === 'rebuild-clusters') {
       await api('/api/recall/index/rebuild', { method: 'POST', body: { full: true, rebuildClusters: true } });
@@ -1501,6 +1787,11 @@
       event.preventDefault();
       state.recall.query = (document.getElementById('recall-input')?.value || '').trim();
       return runRecall();
+    }
+    if (form.id === 'partner-form') {
+      event.preventDefault();
+      state.partner.query = (document.getElementById('partner-query')?.value || '').trim();
+      return runPartner();
     }
     if (form.id === 'path-form') {
       event.preventDefault();
@@ -1701,6 +1992,18 @@
     if (event.target.id === 'recall-graveyard') {
       state.recall.includeGraveyard = event.target.checked;
       return runRecall();
+    }
+    if (event.target.id === 'partner-use-provider') {
+      syncPartnerQuery();
+      state.partner.useProvider = event.target.checked;
+      state.partner.result = null;
+      return render();
+    }
+    if (event.target.id === 'partner-include-graveyard') {
+      syncPartnerQuery();
+      state.partner.includeGraveyard = event.target.checked;
+      state.partner.result = null;
+      return render();
     }
     if (event.target.matches('[data-action="vault-source-type"]')) {
       state.vaultSourceType = event.target.value;

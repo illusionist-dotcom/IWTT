@@ -88,7 +88,9 @@ the standard library.
 modes, works deterministically with no provider, validates any provider output,
 cites real thoughts, writes no canonical row, and saves only explicit findings
 to the existing `derived_artifacts` table. Connection proposals require a human
-save and confirmation through the existing relationship workflow.
+save and confirmation through the existing relationship workflow. The browser
+exposes it as a separate Thinking Partner nav view with seven questions; no
+older view was replaced, and every answer keeps its original-memory references.
 
 ## Deliberate non-goals
 
