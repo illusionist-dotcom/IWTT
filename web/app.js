@@ -154,6 +154,17 @@
     await render();
   }
 
+  // Deeper integration: other views can hand a thought (or a pair) to the
+  // partner without leaving the app or writing anything to the vault.
+  async function openPartner(tool, ids = [], query = '') {
+    state.partner.tool = tool || 'ask';
+    state.partner.selectedIds = [...new Set(ids.filter(Boolean))].slice(0, 20);
+    state.partner.query = String(query || '');
+    state.partner.result = null;
+    state.partner.error = '';
+    return navigate('partner');
+  }
+
   async function render() {
     const token = ++state.renderToken;
     setTopbar();
@@ -478,6 +489,7 @@
         <button class="button small" data-action="recall-feedback" data-feedback="USEFUL" data-id="${attr(result.thoughtId)}" data-rank="${result.rank}">This is it</button>
         <button class="button ghost small" data-action="recall-feedback" data-feedback="NOT_USEFUL" data-id="${attr(result.thoughtId)}" data-rank="${result.rank}">Not this</button>
         <button class="button ghost small" data-action="recall-breakdown" data-id="${attr(result.thoughtId)}">Scoring breakdown</button>
+        <button class="button ghost small" data-action="partner-open" data-tool="explore" data-ids="${attr(result.thoughtId)}">Explore with partner</button>
       </footer>
     </article>`;
   }
@@ -1310,6 +1322,7 @@
       </div><div class="detail-side-col">
         <section class="panel"><div class="panel-head"><div><span class="eyebrow">YOUR INDEX</span><h2 style="margin-top:6px">Tags</h2></div><span class="section-meta">${(t.tags || []).length}</span></div><div class="tag-list">${(t.tags || []).map(tag => `<span class="tag-chip removeable">${esc(tag.name)}<button title="Remove tag" data-action="remove-tag" data-thought-id="${attr(t.id)}" data-tag-id="${attr(tag.id)}">×</button></span>`).join('') || '<span class="revision-note">No tags yet.</span>'}</div><form class="tag-form" id="add-tag-form"><input name="name" maxlength="40" placeholder="Add a tag" required><button class="button small" type="submit">Add</button></form></section>
         <section class="panel"><div class="panel-head"><div><span class="eyebrow">CANONICAL LINKS</span><h2 style="margin-top:6px">Connections</h2><p>AI proposals are not confirmed knowledge.</p></div><span class="section-meta">${connections.length}</span></div><div class="connection-list">${relationshipRows}</div><form class="relation-form" id="relationship-form"><select name="targetId" required class="wide"><option value="">Connect to a thought…</option>${relationOptions}</select><select name="type">${RELATION_TYPES.map(type => `<option value="${type}">${esc(type.replaceAll('_', ' '))}</option>`).join('')}</select><select name="provenance"><option value="USER_CONFIRMED">Confirmed by me</option><option value="AI_SUGGESTED">Unconfirmed AI suggestion</option></select><input class="wide" name="note" maxlength="300" placeholder="Optional note about this link"><span class="relation-help">Suggestions stay unconfirmed until you choose Confirm.</span><button class="button small" type="submit">＋ Add connection</button></form></section>
+        <section class="panel partner-entry-panel"><div class="panel-head"><div><span class="eyebrow">THINKING PARTNER</span><h2 style="margin-top:6px">Think with this memory</h2><p>Carry this original into a grounded question. Nothing is written, edited or connected until you explicitly save.</p></div></div><div class="partner-entry-actions"><button class="button small" data-action="partner-open" data-tool="ask" data-ids="${attr(t.id)}">Ask about this</button><button class="button small" data-action="partner-open" data-tool="explore" data-ids="${attr(t.id)}">Find similar</button><button class="button small" data-action="partner-open" data-tool="connect" data-ids="${attr(t.id)}">Find connections</button><button class="button small" data-action="partner-open" data-tool="evolution" data-ids="${attr(t.id)}">Trace its history</button></div></section>
         ${renderAIConnectionsPanel(t.id, ai.available)}
         <section class="panel derived-panel"><div class="panel-head"><div><span class="derived-mark">Derived · rebuildable</span><h2 style="margin-top:7px">AI interpretation</h2><p>Never replaces your original words.</p></div></div>${derivedContent}<div class="data-actions"><button class="button primary small" data-action="ai-interpret" data-id="${attr(t.id)}" ${ai.available ? "" : "disabled"}>${ai.available ? "Interpret this thought" : "Configure AI in Data & privacy"}</button><button class="button small" data-action="ai-summary" data-id="${attr(t.id)}" ${ai.available ? '' : 'disabled'}>${ai.available ? 'Generate a summary' : 'No AI provider configured'}</button></div></section>
       </div></div>`;
@@ -1443,7 +1456,7 @@
         ? `<p class="ai-connection-status error">${esc(sweep.error)}</p>`
         : `<div class="recall-banner ${sweep.results?.length ? 'possible' : 'none'}"><strong>${sweep.results?.length || 0} possible link${sweep.results?.length === 1 ? '' : 's'} across ${sweep.sourceCount} thought${sweep.sourceCount === 1 ? '' : 's'}</strong><p>${esc(sweep.note || '')}</p></div>${sweep.results?.length ? `<div class="ai-connection-results">${sweep.results.map((item, index) => `<article class="ai-connection-result"><div><strong>${esc(item.sourceTitle)} <span>→</span> ${esc(item.targetTitle)}</strong><small>${esc(String(item.type || '').replaceAll('_', ' '))} · AI suggested${item.candidateSource ? ` · ${esc(CANDIDATE_SOURCE_NAMES[item.candidateSource] || item.candidateSource)}` : ''}</small><p>${esc(item.reason)}</p></div><button class="button small ${item.saved ? '' : 'primary'}" type="button" data-action="save-sweep-relationship" data-index="${index}" ${item.saved ? 'disabled' : ''}>${item.saved ? 'Proposal saved' : 'Save proposal'}</button></article>`).join('')}</div>` : ''}`)
       : '';
-    return `<section class="panel link-review-panel"><div class="panel-head"><div><span class="eyebrow">AI · LINK REVIEW</span><h2 style="margin-top:7px">Compare two thoughts, or sweep the vault</h2><p>Both actions read thoughts and report what the provider finds. Nothing is saved until you choose Save proposal.</p></div></div>
+    return `<section class="panel link-review-panel"><div class="panel-head"><div><span class="eyebrow">AI · LINK REVIEW</span><h2 style="margin-top:7px">Compare two thoughts, or sweep the vault</h2><p>Both actions read thoughts and report what the provider finds. Nothing is saved until you choose Save proposal. To compare without a provider, use the Thinking Partner instead.</p></div><button class="button small" type="button" data-action="partner-open" data-tool="compare">Open in partner</button></div>
       <div class="link-review-columns">
         <div class="link-review-column"><strong>Compare two thoughts</strong><p class="revision-note">The first thought is the source; the direction of any proposal respects that order.</p><form id="ai-pair-form" class="link-review-form"><label class="field">Source thought<select name="sourceId" required>${options}</select></label><label class="field">Compare with<select name="targetId" required>${options}</select></label><div class="data-actions"><button class="button primary small" type="submit" ${review.pairLoading ? 'disabled' : ''}>${review.pairLoading ? 'Comparing…' : 'Compare'}</button></div></form>${pairMarkup}</div>
         <div class="link-review-column"><strong>Sweep the vault</strong><p class="revision-note">Checks the least-connected thoughts against a bounded candidate pool. This makes one provider request per thought, so keep the count low.</p><form id="ai-sweep-form" class="link-review-form"><label class="field">Thoughts to check<select name="limit"><option value="3">3</option><option value="6" selected>6</option><option value="10">10</option></select></label><label class="field">Candidates each<select name="perThought"><option value="4">4</option><option value="6" selected>6</option><option value="10">10</option></select></label><div class="data-actions"><button class="button primary small" type="submit" ${review.sweepLoading ? 'disabled' : ''}>${review.sweepLoading ? 'Sweeping…' : 'Sweep'}</button></div></form>${sweepMarkup}</div>
@@ -1552,6 +1565,10 @@
     if (action === 'recall-feedback') return recallFeedback(button);
     if (action === 'recall-breakdown') return loadBreakdown(button);
     // ---- v0.3 Thinking Partner: every action is explicit and derived ----
+    if (action === 'partner-open') {
+      const ids = button.dataset.ids ? button.dataset.ids.split(',').filter(Boolean) : (id ? [id] : []);
+      return openPartner(button.dataset.tool || 'ask', ids, button.dataset.query || '');
+    }
     if (action === 'partner-tool') {
       syncPartnerQuery();
       state.partner.tool = button.dataset.tool || 'ask';

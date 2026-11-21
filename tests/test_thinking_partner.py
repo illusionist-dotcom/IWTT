@@ -98,6 +98,27 @@ class ThinkingPartnerViewTestCase(unittest.TestCase):
         self.assertIn("state.partner.selectedIds.length", self.source)
         self.assertIn("data-prompt=", self.source)
 
+    def test_other_views_hand_off_to_the_partner_without_writing(self) -> None:
+        """Recall, detail and Connections can open the partner with context.
+
+        The hand-off only moves UI state; it never calls a write route, so a
+        person keeps control of what is selected and whether anything is saved.
+        """
+        handoff = self.source[self.source.index("async function openPartner("):]
+        handoff = handoff[:handoff.index("async function render()")]
+        self.assertIn("return navigate('partner')", handoff)
+        self.assertIn("state.partner.selectedIds =", handoff)
+        self.assertIn("state.partner.result = null", handoff)
+        self.assertNotIn("api(", handoff)
+        self.assertNotIn("/api/", handoff)
+
+        self.assertIn("action === 'partner-open'", self.source)
+        # Recall result, thought detail and Connections link review each expose
+        # at least one hand-off control.
+        self.assertGreaterEqual(self.source.count('data-action="partner-open"'), 3)
+        self.assertIn('data-tool="explore" data-ids=', self.source)
+        self.assertIn('data-tool="compare">Open in partner', self.source)
+
     def test_the_view_works_with_no_provider(self) -> None:
         self.assertIn("'/api/reasoning'", self.source)
         self.assertIn("status?.providerAvailable", self.source)

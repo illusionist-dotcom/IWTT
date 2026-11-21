@@ -825,4 +825,5 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 .partner-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:8px; }
 .partner-boundary { margin-top:12px; border-top:1px dashed #e0d6e8; padding-top:10px; color:#8e8495; font-size:10px; line-height:1.5; }
 .partner-followups { margin-top:14px; }
+.partner-entry-actions { display:flex; flex-wrap:wrap; gap:7px; margin-top:11px; }
 @media(max-width:980px) { .partner-workspace { grid-template-columns:1fr; } }

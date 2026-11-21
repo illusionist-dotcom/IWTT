@@ -8,7 +8,7 @@ tests decode UTF-8 explicitly rather than relying on the host ANSI code page. Wi
 11 performance measurements are recorded separately in `BENCHMARKS.md`.
 
 ```bash
-python -m unittest discover -s tests -v        # gate 1 — 286 tests
+python -m unittest discover -s tests -v        # gate 1 — 287 tests
 python scripts/verify_release.py               # gate 2 — the v0.1 contract
 python scripts/verify_release_v02.py           # gate 3 — the v0.2 contract
 python scripts/benchmark_recall.py --suite     # gate 4 — measured performance
@@ -23,7 +23,7 @@ git status --short        # nothing unintended is about to be committed
 
 ---
 
-## Gate 1 — Automated tests (286)
+## Gate 1 — Automated tests (287)
 
 Tests use temporary directories and temporary SQLite databases; they never touch the
 user's vault.
@@ -40,7 +40,7 @@ user's vault.
 | `test_providers.py` | 26 | No-AI default, `MockProvider`, Ollama preset, model listing, invalid endpoints/credentials and deterministic provider switching |
 | `test_semantic.py` | 47 | Opt-in embedding index, build/status/erase routes, separate semantic section, stale-vector detection and provider failures |
 | `test_reasoning.py` | 29 | All six reasoning modes without a provider, similarity ranking, connection discovery, themes, tensions, chronology, citations, canonical immutability, invalid provider responses and the save/approval workflow |
-| `test_thinking_partner.py` | 11 | Dedicated nav view, seven human questions mapped to closed modes, suggested prompts, memory selection, clickable citations, explicit uncertainty, follow-up context and no automatic canonical writes |
+| `test_thinking_partner.py` | 12 | Dedicated nav view, seven human questions mapped to closed modes, suggested prompts, memory selection, clickable citations, explicit uncertainty, follow-up context, hand-offs from Recall/detail/Connections, and no automatic canonical writes |
 | `test_canonical_destruction.py` | 3 | **The mandatory destructive verification** (below) |
 | `test_migration_v01_to_v02.py` | 7 | Migration from a genuine v0.1-format file (below) |
 | `test_web_interface.py` | 14 | Static button/form/route wiring, explicit rendering for every artifact type, and Node execution of the artifact renderer |
