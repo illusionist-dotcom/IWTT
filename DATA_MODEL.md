@@ -119,7 +119,7 @@ No embedding, graph coordinate, cluster assignment, or layout coordinate is stor
 {
   "format": "iwtt-vault-export",
   "schemaVersion": 1,
-  "appVersion": "0.2.0",
+  "appVersion": "0.3.0",
   "exportedAt": "...Z",
   "canonical": {
     "thoughts": [], "revisions": [], "tags": [],

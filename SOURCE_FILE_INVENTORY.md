@@ -8,7 +8,7 @@ Line counts are for the v0.2 tree (8,416 lines in `iwtt/recall/` alone).
 ## Root metadata
 
 - `.gitignore` — excludes runtime databases, caches, backups, and secrets from source snapshots.
-- `VERSION` — application version (`0.2.0`), canonical export schema version (`1`, **unchanged from v0.1**), canonical `schema_info.schema_version` (`1`), recall derived index schema version (`3`), and the Checkpoint 001 baseline commit hash.
+- `VERSION` — application version (`0.3.0`), canonical export schema version (`1`, **unchanged from v0.1**), canonical `schema_info.schema_version` (`1`), recall derived index schema version (`4`, bumped with v0.3), and the Checkpoint 001 baseline commit hash.
 - `README.md` — local setup, v0.2 feature guide, honest limits, documentation index, and test commands.
 - `Start-IWTT.cmd` — source-checkout Windows launcher; starts the local server and browser UI.
 - `Makefile` — `run`, `test`, and `verify` shortcuts.

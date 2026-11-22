@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 EXPORT_FORMAT = "iwtt-vault-export"
 #: The canonical export contract is UNCHANGED in v0.2.  A v0.1 export imports into
 #: v0.2 and a v0.2 canonical export imports into v0.1, because v0.2 adds no
