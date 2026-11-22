@@ -243,7 +243,7 @@ class StorageBoundaryTestCase(unittest.TestCase):
         versions = self.vault.schema_versions()
         self.assertEqual(versions["canonicalSchemaVersion"], "1",
                          "v0.2 adds derived tables only; it does not version the canonical schema up")
-        self.assertEqual(versions["appVersion"], "0.2.0")
+        self.assertEqual(versions["appVersion"], "0.3.0")
         self.assertTrue(versions["recallSchemaVersion"])
 
     def test_no_canonical_table_gains_a_derived_column(self) -> None:
